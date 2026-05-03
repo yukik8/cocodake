@@ -191,9 +191,6 @@ function SharedPlaceRow({
             <span className="text-xs text-amber-600">{place.rating}</span>
           </div>
         )}
-        {place.note && (
-          <p className="text-xs text-gray-400 mt-0.5 italic truncate">{place.note}</p>
-        )}
       </div>
 
       <a

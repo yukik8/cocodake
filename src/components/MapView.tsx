@@ -423,10 +423,11 @@ export default function MapView({
           ">${count}</div>
         `;
 
-        el.addEventListener("click", () => {
-          const newZoom = sc.getClusterExpansionZoom(
-            cluster.properties.cluster_id
-          );
+        el.addEventListener("click", (e) => {
+          const m = mapRef.current as (maplibregl.Map & { _markerClicked?: () => void }) | null;
+          m?._markerClicked?.();
+          e.stopPropagation();
+          const newZoom = sc.getClusterExpansionZoom(cluster.properties.cluster_id);
           map.flyTo({ center: [lng, lat], zoom: newZoom });
         });
 

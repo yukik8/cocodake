@@ -21,6 +21,28 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ places: data });
 }
 
+export async function PATCH(req: NextRequest) {
+  const body = await req.json();
+  const { id, session, note } = body as { id: string; session: string; note: string | null };
+
+  if (!id || !session) {
+    return NextResponse.json({ error: "id and session required" }, { status: 400 });
+  }
+
+  const supabase = createServerClient();
+  const { error } = await supabase
+    .from("places")
+    .update({ note: note ?? null })
+    .eq("id", id)
+    .eq("user_session", session);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true });
+}
+
 export async function DELETE(req: NextRequest) {
   const body = await req.json();
   const { id, session } = body as { id: string; session: string };
