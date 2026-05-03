@@ -220,11 +220,13 @@ export async function POST(req: NextRequest) {
       coords = extractCoordsFromUrl(resolvedUrl);
       nameFromUrl = extractPlaceNameFromUrl(resolvedUrl);
       placeId = extractPlaceIdFromUrl(resolvedUrl);
-      console.log('[add]', JSON.stringify({ rawUrl: rawUrl.trim(), resolvedUrl, coords, placeId }));
+      console.log('[add]', JSON.stringify({ rawUrl: rawUrl.trim(), resolvedUrl, coords, placeId, nameFromUrl }));
       if (!coords && !placeId) {
         // 店名がURLにある場合は Places API テキスト検索でフォールバック
         if (nameFromUrl) {
+          console.log('[add] fallback enrichPlaceByName:', nameFromUrl);
           const fallback = await enrichPlaceByName(nameFromUrl);
+          console.log('[add] fallback result:', JSON.stringify(fallback));
           if (fallback?.place_id) {
             placeId = fallback.place_id;
           } else {
