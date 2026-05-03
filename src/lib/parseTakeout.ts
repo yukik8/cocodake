@@ -322,6 +322,11 @@ export function extractPlaceNameFromUrl(url: string): string | null {
     if (pathMatch) {
       return decodeURIComponent(pathMatch[1].replace(/\+/g, " "));
     }
+    // ?q=店名+住所 形式（座標でない場合）
+    const q = u.searchParams.get("q");
+    if (q && !/^-?\d+\.\d+,-?\d+\.\d+$/.test(q.trim())) {
+      return q;
+    }
   } catch {
     // ignore
   }
