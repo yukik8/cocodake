@@ -213,14 +213,14 @@ export async function POST(req: NextRequest) {
     } else if (rawUrl) {
       resolvedUrl = await resolveUrl(rawUrl.trim());
       coords = extractCoordsFromUrl(resolvedUrl);
-      if (!coords) {
+      nameFromUrl = extractPlaceNameFromUrl(resolvedUrl);
+      placeId = extractPlaceIdFromUrl(resolvedUrl);
+      if (!coords && !placeId) {
         return NextResponse.json(
           { error: "URLから座標を取得できませんでした。GoogleマップまたはTabelog（食べログ）のURLを貼り付けてください。" },
           { status: 422 }
         );
       }
-      nameFromUrl = extractPlaceNameFromUrl(resolvedUrl);
-      placeId = extractPlaceIdFromUrl(resolvedUrl);
     } else {
       return NextResponse.json(
         { error: "url or lat/lng are required" },
@@ -238,7 +238,7 @@ export async function POST(req: NextRequest) {
 
     const enrichResult = placeId
       ? await enrichPlaceById(placeId)
-      : await enrichPlaceByCoords(coords.lat, coords.lng, nameFromUrl || undefined);
+      : await enrichPlaceByCoords(coords!.lat, coords!.lng, nameFromUrl || undefined);
 
     if (enrichResult?.name) {
       name = enrichResult.name;
@@ -247,11 +247,22 @@ export async function POST(req: NextRequest) {
       rating = enrichResult.rating;
       photo_url = enrichResult.photo_url;
       enriched = true;
-    } else if (!nameFromUrl) {
+      // coords が取れていない場合（place_id のみの場合）enrichResult から補完
+      if (!coords && enrichResult.lat != null && enrichResult.lng != null) {
+        coords = { lat: enrichResult.lat, lng: enrichResult.lng };
+      }
+    } else if (coords && !nameFromUrl) {
       // Places APIがない or 失敗 → Nominatimフォールバック
       const nominatim = await reverseGeocodeNominatim(coords.lat, coords.lng);
       name = nominatim.name || "名称不明";
       address = nominatim.address;
+    }
+
+    if (!coords) {
+      return NextResponse.json(
+        { error: "場所の座標を取得できませんでした" },
+        { status: 422 }
+      );
     }
 
     const resolvedPlaceId = enrichResult?.place_id || placeId;

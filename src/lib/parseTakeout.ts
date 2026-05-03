@@ -233,8 +233,11 @@ export function extractCoordsFromUrl(
 }
 
 export function extractPlaceIdFromUrl(url: string): string | null {
-  const match = url.match(/place_id=([^&]+)/);
-  return match ? match[1] : null;
+  const m1 = url.match(/place_id=([^&/\s]+)/);
+  if (m1) return m1[1];
+  const m2 = url.match(/!1s(ChIJ[^!]+)/);
+  if (m2) return m2[1];
+  return null;
 }
 
 export function isTabelogUrl(url: string): boolean {
