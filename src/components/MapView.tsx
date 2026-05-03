@@ -45,6 +45,7 @@ export default function MapView({
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const selectionBoxRef = useRef<HTMLDivElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [bearing, setBearing] = useState(0);
 
   // リストから選択した場所のカード表示
   const [focusedPlace, setFocusedPlace] = useState<Place | null>(null);
@@ -165,11 +166,13 @@ export default function MapView({
       attributionControl: false,
     });
 
-    map.addControl(new maplibregl.NavigationControl(), "top-right");
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.addControl(
       new maplibregl.AttributionControl({ compact: true }),
       "bottom-right"
     );
+
+    map.on('rotate', () => setBearing(map.getBearing()));
 
     mapRef.current = map;
 
@@ -444,15 +447,12 @@ export default function MapView({
         el.innerHTML = `
           <div style="
             color:${isSelected ? "#059669" : "#dc2626"};
-            font-size:13px;
-            font-weight:800;
+            font-size:12px;
+            font-weight:700;
             white-space:nowrap;
             margin-bottom:3px;
             letter-spacing:0.01em;
-            background:rgba(255,255,255,0.85);
-            padding:2px 5px;
-            border-radius:4px;
-            backdrop-filter:blur(2px);
+            text-shadow:-1px -1px 0 #fff,1px -1px 0 #fff,-1px 1px 0 #fff,1px 1px 0 #fff;
           ">${name}</div>
           <div style="
             background:${color};
@@ -643,6 +643,23 @@ export default function MapView({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
       />
+
+      {/* コンパスボタン */}
+      {Math.abs(bearing) > 1 && (
+        <button
+          onClick={() => mapRef.current?.easeTo({ bearing: 0, duration: 300 })}
+          className="absolute top-3 right-3 z-10 w-10 h-10 bg-white rounded-xl shadow-lg border border-gray-200 flex items-center justify-center hover:bg-gray-50 transition-colors"
+          title="北向きに戻す"
+        >
+          <svg
+            width="22" height="22" viewBox="0 0 24 24"
+            style={{ transform: `rotate(${-bearing}deg)`, transition: 'transform 0.1s' }}
+          >
+            <polygon points="12,3 15,12 12,10 9,12" fill="#dc2626" />
+            <polygon points="12,21 15,12 12,14 9,12" fill="#9ca3af" />
+          </svg>
+        </button>
+      )}
 
       {/* 検索バー */}
       {!readOnly && !selectionMode && (

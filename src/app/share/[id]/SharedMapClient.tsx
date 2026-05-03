@@ -15,6 +15,7 @@ export default function SharedMapClient({ share }: Props) {
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [focusedPlaceId, setFocusedPlaceId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"map" | "list">("map");
+  const [copied, setCopied] = useState(false);
 
   const handleFocusPlace = (id: string) => {
     setFocusedPlaceId(id);
@@ -23,68 +24,75 @@ export default function SharedMapClient({ share }: Props) {
 
   const handleCopyUrl = async () => {
     await navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
+    <div className="flex flex-col h-screen bg-white">
       {/* Header */}
-      <header className="flex-shrink-0 bg-white border-b border-gray-200 shadow-sm">
+      <header className="flex-shrink-0 bg-white border-b border-gray-100">
         <div className="flex items-center gap-3 px-4 h-14">
-          <span className="text-2xl">🗺️</span>
-          <div className="flex-1 min-w-0">
-            <h1 className="text-base font-bold text-gray-900 truncate">
-              {share.title || "共有スポットリスト"}
-            </h1>
-            <p className="text-xs text-gray-400">
-              {places.length}件のスポット
-              {share.expires_at && (
-                <span>
-                  {" "}・{new Date(share.expires_at).toLocaleDateString("ja-JP")}まで有効
-                </span>
-              )}
-            </p>
-          </div>
+          <span className="text-xl font-bold text-gray-900 tracking-tight flex-1 truncate">
+            {share.title || "cocodake"}
+          </span>
+          <span className="text-xs text-gray-400 flex-shrink-0">
+            {places.length}件
+            {share.expires_at && (
+              <span>・{new Date(share.expires_at).toLocaleDateString("ja-JP")}まで</span>
+            )}
+          </span>
           <button
             onClick={handleCopyUrl}
-            className="flex-shrink-0 px-3 py-1.5 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+            className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-[#2563eb] text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
-            URLをコピー
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            {copied ? "コピーした" : "リンクをコピー"}
           </button>
         </div>
       </header>
 
       {/* Mobile tabs */}
-      <div className="sm:hidden flex border-b border-gray-200 bg-white">
-        <button
-          onClick={() => setActiveTab("map")}
-          className={`flex-1 py-2.5 text-sm font-medium ${
-            activeTab === "map"
-              ? "text-blue-600 border-b-2 border-blue-600"
-              : "text-gray-500"
-          }`}
-        >
-          マップ
-        </button>
-        <button
-          onClick={() => setActiveTab("list")}
-          className={`flex-1 py-2.5 text-sm font-medium ${
-            activeTab === "list"
-              ? "text-blue-600 border-b-2 border-blue-600"
-              : "text-gray-500"
-          }`}
-        >
-          リスト
-        </button>
+      <div className="sm:hidden flex border-b border-gray-100 bg-white">
+        {(["map", "list"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-semibold transition-colors ${
+              activeTab === tab
+                ? "text-[#2563eb] border-b-2 border-[#2563eb]"
+                : "text-gray-400"
+            }`}
+          >
+            {tab === "map" ? (
+              <>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/>
+                  <line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/>
+                </svg>
+                マップ
+              </>
+            ) : (
+              <>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                  <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                </svg>
+                リスト
+              </>
+            )}
+          </button>
+        ))}
       </div>
 
       {/* Main */}
       <div className="flex-1 flex overflow-hidden">
-        {/* List panel */}
-        <aside className="hidden sm:block w-80 bg-white border-r border-gray-200 overflow-y-auto">
-          <div className="p-3 border-b border-gray-100">
-            <p className="text-xs font-medium text-gray-500">
-              {places.length}件のスポット
-            </p>
+        {/* Desktop list panel */}
+        <aside className="hidden sm:block w-72 bg-white border-r border-gray-100 overflow-y-auto">
+          <div className="px-4 py-2.5 border-b border-gray-100">
+            <p className="text-xs font-semibold text-gray-400">{places.length}件のスポット</p>
           </div>
           {places.map((place) => (
             <SharedPlaceRow
@@ -102,7 +110,7 @@ export default function SharedMapClient({ share }: Props) {
           <MapView
             places={places}
             selectedIds={new Set()}
-            onSelectPlace={() => {}}
+            onSelectPlace={(place) => setFocusedPlaceId(place.id)}
             selectionMode={false}
             highlightedId={highlightedId}
             focusedPlaceId={focusedPlaceId}
@@ -143,8 +151,8 @@ function SharedPlaceRow({
 }) {
   return (
     <div
-      className={`flex items-start gap-3 px-3 py-3 border-b border-gray-100 transition-colors cursor-pointer ${
-        isHighlighted ? "bg-yellow-50" : "hover:bg-gray-50"
+      className={`flex items-center gap-3 px-4 py-3 border-b border-gray-100 cursor-pointer transition-colors ${
+        isHighlighted ? "bg-blue-50" : "hover:bg-gray-50"
       }`}
       onMouseEnter={() => onHover(place.id)}
       onMouseLeave={() => onHover(null)}
@@ -154,11 +162,14 @@ function SharedPlaceRow({
         <img
           src={place.photo_url}
           alt={place.name || ""}
-          className="w-14 h-14 rounded-xl object-cover flex-shrink-0"
+          className="w-13 h-13 rounded-xl object-cover flex-shrink-0"
+          style={{ width: 52, height: 52 }}
         />
       ) : (
-        <div className="w-14 h-14 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0 text-2xl">
-          📍
+        <div className="flex-shrink-0 rounded-xl bg-gray-100 flex items-center justify-center" style={{ width: 52, height: 52 }}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
+          </svg>
         </div>
       )}
 
@@ -167,31 +178,36 @@ function SharedPlaceRow({
           {place.name || "名称不明"}
         </p>
         {place.category && (
-          <span className="inline-block text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 mt-0.5">
-            {place.category}
-          </span>
+          <p className="text-xs text-[#2563eb] mt-0.5 truncate">{place.category}</p>
         )}
         {place.address && (
-          <p className="text-xs text-gray-500 mt-1 truncate">{place.address}</p>
+          <p className="text-xs text-gray-400 mt-0.5 truncate">{place.address}</p>
         )}
         {place.rating != null && (
-          <p className="text-xs text-yellow-600 mt-0.5">⭐ {place.rating}</p>
+          <div className="flex items-center gap-1 mt-0.5">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="#d97706" stroke="none">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+            </svg>
+            <span className="text-xs text-amber-600">{place.rating}</span>
+          </div>
         )}
         {place.note && (
-          <p className="text-xs text-gray-400 mt-0.5 italic truncate">
-            {place.note}
-          </p>
+          <p className="text-xs text-gray-400 mt-0.5 italic truncate">{place.note}</p>
         )}
-        <a
-          href={place.url || `https://www.google.com/maps?q=${place.lat},${place.lng}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs text-blue-500 hover:underline mt-1 inline-block"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Googleマップで開く →
-        </a>
       </div>
+
+      <a
+        href={place.url || `https://www.google.com/maps?q=${place.lat},${place.lng}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex-shrink-0 p-1.5 rounded-lg text-gray-300 hover:text-[#2563eb] hover:bg-blue-50 transition-colors"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+          <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+        </svg>
+      </a>
     </div>
   );
 }

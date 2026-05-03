@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "9595fce2-cba7-480b-84ed-ccacd11a85c8"
+      }
+    },
+    "android": {
+      "package": "com.yukik8.map"
+    },
+    "ios": {
+      "bundleIdentifier": "com.yukik8.map",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}
