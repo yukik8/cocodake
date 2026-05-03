@@ -215,6 +215,9 @@ export async function POST(req: NextRequest) {
       coords = extractCoordsFromUrl(resolvedUrl);
       nameFromUrl = extractPlaceNameFromUrl(resolvedUrl);
       placeId = extractPlaceIdFromUrl(resolvedUrl);
+      console.log('[add] rawUrl:', rawUrl.trim());
+      console.log('[add] resolvedUrl:', resolvedUrl);
+      console.log('[add] coords:', coords, 'placeId:', placeId);
       if (!coords && !placeId) {
         return NextResponse.json(
           { error: "URLから座標を取得できませんでした。GoogleマップまたはTabelog（食べログ）のURLを貼り付けてください。" },
