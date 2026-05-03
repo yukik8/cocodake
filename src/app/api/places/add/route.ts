@@ -9,21 +9,26 @@ import {
 } from "@/lib/parseTakeout";
 import { enrichPlaceByCoords, enrichPlaceById, enrichPlaceByName } from "@/lib/placesApi";
 
+const MOBILE_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
 // 短縮URLを展開する（maps.app.goo.gl など）
+// モバイル UA を付けないと Google が座標なしの簡略 URL を返すことがある
 async function resolveUrl(url: string): Promise<string> {
+  const headers = { "User-Agent": MOBILE_UA };
   try {
-    const res = await fetch(url, { method: "HEAD", redirect: "follow" });
+    const res = await fetch(url, { method: "HEAD", redirect: "follow", headers });
+    if (res.url && res.url !== url) return res.url;
+  } catch {}
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      headers,
+      signal: AbortSignal.timeout(5000),
+    });
     return res.url || url;
   } catch {
-    try {
-      const res = await fetch(url, {
-        redirect: "follow",
-        signal: AbortSignal.timeout(5000),
-      });
-      return res.url || url;
-    } catch {
-      return url;
-    }
+    return url;
   }
 }
 
@@ -215,14 +220,25 @@ export async function POST(req: NextRequest) {
       coords = extractCoordsFromUrl(resolvedUrl);
       nameFromUrl = extractPlaceNameFromUrl(resolvedUrl);
       placeId = extractPlaceIdFromUrl(resolvedUrl);
-      console.log('[add] rawUrl:', rawUrl.trim());
-      console.log('[add] resolvedUrl:', resolvedUrl);
-      console.log('[add] coords:', coords, 'placeId:', placeId);
+      console.log('[add]', JSON.stringify({ rawUrl: rawUrl.trim(), resolvedUrl, coords, placeId }));
       if (!coords && !placeId) {
-        return NextResponse.json(
-          { error: "URLから座標を取得できませんでした。GoogleマップまたはTabelog（食べログ）のURLを貼り付けてください。" },
-          { status: 422 }
-        );
+        // 店名がURLにある場合は Places API テキスト検索でフォールバック
+        if (nameFromUrl) {
+          const fallback = await enrichPlaceByName(nameFromUrl);
+          if (fallback?.place_id) {
+            placeId = fallback.place_id;
+          } else {
+            return NextResponse.json(
+              { error: "URLから座標を取得できませんでした。GoogleマップまたはTabelog（食べログ）のURLを貼り付けてください。" },
+              { status: 422 }
+            );
+          }
+        } else {
+          return NextResponse.json(
+            { error: "URLから座標を取得できませんでした。GoogleマップまたはTabelog（食べログ）のURLを貼り付けてください。" },
+            { status: 422 }
+          );
+        }
       }
     } else {
       return NextResponse.json(

@@ -229,6 +229,12 @@ export function extractCoordsFromUrl(
     };
   }
 
+  // Pattern: q=lat,lng (例: https://www.google.com/maps?q=35.xxx,139.xxx)
+  const qMatch = url.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if (qMatch) {
+    return { lat: parseFloat(qMatch[1]), lng: parseFloat(qMatch[2]) };
+  }
+
   return null;
 }
 
