@@ -143,7 +143,7 @@ export async function POST(req: NextRequest) {
 
     // すべての情報がフロントから渡された場合（検索結果からの追加）
     if (directPlaceId && rawLat != null && rawLng != null) {
-      const googleMapsUrl = `https://www.google.com/maps/place/?q=place_id:${directPlaceId}`;
+      const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(directName || "名称不明")}&query_place_id=${directPlaceId}`;
       const supabase = createServerClient();
       const { data: existing } = await supabase
         .from("places").select("id").eq("user_session", session).eq("place_id", directPlaceId).maybeSingle();
@@ -193,7 +193,7 @@ export async function POST(req: NextRequest) {
           { status: 422 }
         );
       }
-      const googleMapsUrl = `https://www.google.com/maps/place/?q=place_id:${enrichResult.place_id}`;
+      const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(enrichResult.name || info.name)}&query_place_id=${enrichResult.place_id}`;
       const supabase = createServerClient();
       const { data: existing } = await supabase
         .from("places").select("id").eq("user_session", session).eq("place_id", enrichResult.place_id).maybeSingle();
@@ -289,7 +289,7 @@ export async function POST(req: NextRequest) {
     const resolvedPlaceId = enrichResult?.place_id || placeId;
 
     const googleMapsUrl = resolvedPlaceId
-      ? `https://www.google.com/maps/place/?q=place_id:${resolvedPlaceId}`
+      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&query_place_id=${resolvedPlaceId}`
       : resolvedUrl && resolvedUrl.includes("google.com/maps")
         ? resolvedUrl
         : `https://www.google.com/maps?q=${coords.lat},${coords.lng}`;

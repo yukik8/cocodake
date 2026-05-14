@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
         place_id: p.place_id || null,
         name: p.name || "名称不明",
         url: p.place_id
-          ? `https://www.google.com/maps/place/?q=place_id:${p.place_id}`
+          ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name || "名称不明")}&query_place_id=${p.place_id}`
           : p.url || `https://www.google.com/maps?q=${p.lat!},${p.lng!}`,
         lat: p.lat!,
         lng: p.lng!,
