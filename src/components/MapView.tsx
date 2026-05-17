@@ -47,21 +47,52 @@ export default function MapView({
   const [isDrawing, setIsDrawing] = useState(false);
   const [bearing, setBearing] = useState(0);
 
-  // リストから選択した場所のカード表示
-  const [focusedPlace, setFocusedPlace] = useState<Place | null>(null);
+  // カルーセル表示
+  const [carouselOpen, setCarouselOpen] = useState(false);
+  const [carouselIndex, setCarouselIndex] = useState(0);
+  const carouselRef = useRef<HTMLDivElement>(null);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // focusedPlaceId が変わったらマップをフライして場所カードを表示
+  // focusedPlaceId が変わったらカルーセルを開いて該当カードへ
   useEffect(() => {
-    if (!focusedPlaceId) { setFocusedPlace(null); return; }
-    const place = places.find((p) => p.id === focusedPlaceId);
-    if (!place) return;
-    setFocusedPlace(place);
-    setTapPreview(null); // タッププレビューは閉じる
+    if (!focusedPlaceId) return;
+    const index = places.findIndex((p) => p.id === focusedPlaceId);
+    if (index === -1) return;
+    setCarouselOpen(true);
+    setCarouselIndex(index);
+    setTapPreview(null);
+    // カルーセルが描画された後にスクロール
+    requestAnimationFrame(() => {
+      const container = carouselRef.current;
+      if (!container) return;
+      const card = container.children[index] as HTMLElement | undefined;
+      card?.scrollIntoView({ behavior: "instant", block: "nearest", inline: "center" });
+    });
     const map = mapRef.current;
-    if (map) {
-      map.flyTo({ center: [place.lng, place.lat], zoom: Math.max(map.getZoom(), 16), duration: 600 });
+    const place = places[index];
+    if (map && place) {
+      map.flyTo({ center: [place.lng, place.lat], zoom: Math.max(map.getZoom(), 14), duration: 600 });
     }
   }, [focusedPlaceId, places]);
+
+  // スワイプ後にどのカードが中央にいるかを検出してマップを追従
+  const handleCarouselScroll = useCallback(() => {
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => {
+      const container = carouselRef.current;
+      if (!container) return;
+      const cardWidth = (container.children[0] as HTMLElement)?.offsetWidth ?? container.offsetWidth;
+      const index = Math.round(container.scrollLeft / (cardWidth + 12)); // 12 = gap
+      const place = places[index];
+      if (!place) return;
+      setCarouselIndex(index);
+      mapRef.current?.flyTo({
+        center: [place.lng, place.lat],
+        zoom: Math.max(mapRef.current.getZoom(), 14),
+        duration: 400,
+      });
+    }, 100);
+  }, [places]);
 
   // マップタップで追加
   const [tapPreview, setTapPreview] = useState<{
@@ -761,50 +792,72 @@ export default function MapView({
         </div>
       )}
 
-      {/* リストから選択した場所のカード */}
-      {focusedPlace && !tapPreview && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 w-80 bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden">
-          <div className="flex gap-3 p-4">
-            {focusedPlace.photo_url ? (
-              <img src={focusedPlace.photo_url} className="w-16 h-16 rounded-xl object-cover flex-shrink-0" alt="" />
-            ) : (
-              <div className="w-16 h-16 rounded-xl bg-gray-100 flex items-center justify-center text-2xl flex-shrink-0">📍</div>
-            )}
-            <div className="flex-1 min-w-0">
-              <a
-                href={focusedPlace.url || `https://www.google.com/maps?q=${focusedPlace.lat},${focusedPlace.lng}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-semibold text-gray-900 text-sm hover:text-blue-600 hover:underline block"
-              >
-                {focusedPlace.name || "名称不明"}
-              </a>
-              {focusedPlace.category && (
-                <span className="text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5">{focusedPlace.category}</span>
-              )}
-              {focusedPlace.address && (
-                <p className="text-xs text-gray-400 mt-1 line-clamp-2">{focusedPlace.address}</p>
-              )}
-              {focusedPlace.rating != null && (
-                <p className="text-xs text-yellow-600 mt-0.5">⭐ {focusedPlace.rating}</p>
-              )}
-            </div>
-          </div>
-          <div className="flex border-t border-gray-100">
-            <a
-              href={focusedPlace.url || `https://www.google.com/maps?q=${focusedPlace.lat},${focusedPlace.lng}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex-1 py-3 text-sm text-center text-blue-600 hover:bg-blue-50 font-medium"
-            >
-              Google Mapで開く
-            </a>
+      {/* スポットカルーセル */}
+      {carouselOpen && !tapPreview && places.length > 0 && (
+        <div className="absolute bottom-0 left-0 right-0 z-20 pb-4 pt-2">
+          {/* 閉じるボタン */}
+          <div className="flex justify-end px-4 mb-1">
             <button
-              onClick={() => { setFocusedPlace(null); onClearFocus?.(); }}
-              className="flex-1 py-3 text-sm text-gray-500 hover:bg-gray-50 border-l border-gray-100"
+              onClick={() => { setCarouselOpen(false); onClearFocus?.(); }}
+              className="text-xs text-gray-400 hover:text-gray-600 bg-white/80 backdrop-blur-sm rounded-full px-3 py-1 shadow"
             >
               閉じる
             </button>
+          </div>
+          {/* インジケーター */}
+          {places.length > 1 && (
+            <div className="flex justify-center gap-1 mb-2">
+              {places.map((_, i) => (
+                <div
+                  key={i}
+                  className={`rounded-full transition-all duration-200 ${i === carouselIndex ? "w-4 h-1.5 bg-blue-500" : "w-1.5 h-1.5 bg-gray-300"}`}
+                />
+              ))}
+            </div>
+          )}
+          {/* カード列 */}
+          <div
+            ref={carouselRef}
+            onScroll={handleCarouselScroll}
+            className="flex gap-3 overflow-x-scroll px-4 snap-x snap-mandatory scrollbar-none"
+            style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+          >
+            {places.map((place) => (
+              <div
+                key={place.id}
+                className="flex-shrink-0 w-72 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden snap-center"
+              >
+                <div className="flex gap-3 p-4">
+                  {place.photo_url ? (
+                    <img src={place.photo_url} className="w-14 h-14 rounded-xl object-cover flex-shrink-0" alt="" />
+                  ) : (
+                    <div className="w-14 h-14 rounded-xl bg-gray-100 flex items-center justify-center text-xl flex-shrink-0">📍</div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-gray-900 text-sm truncate">{place.name || "名称不明"}</p>
+                    {place.category && (
+                      <span className="text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 inline-block mt-0.5">{place.category}</span>
+                    )}
+                    {place.address && (
+                      <p className="text-xs text-gray-400 mt-1 line-clamp-2">{place.address}</p>
+                    )}
+                    {place.rating != null && (
+                      <p className="text-xs text-yellow-600 mt-0.5">⭐ {place.rating}</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex border-t border-gray-100">
+                  <a
+                    href={place.url || `https://www.google.com/maps?q=${place.lat},${place.lng}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 py-2.5 text-xs text-center text-blue-600 hover:bg-blue-50 font-medium"
+                  >
+                    Google Mapで開く
+                  </a>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
