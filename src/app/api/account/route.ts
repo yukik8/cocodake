@@ -18,9 +18,18 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: placesError.message }, { status: 500 });
   }
 
-  const { error: authError } = await supabase.auth.admin.deleteUser(session);
-  if (authError) {
-    return NextResponse.json({ error: authError.message }, { status: 500 });
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  const authRes = await fetch(`${supabaseUrl}/auth/v1/admin/users/${session}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${serviceRoleKey}`,
+      apikey: serviceRoleKey,
+    },
+  });
+  if (!authRes.ok) {
+    const body = await authRes.json().catch(() => ({}));
+    return NextResponse.json({ error: body.message ?? "auth deletion failed" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });
