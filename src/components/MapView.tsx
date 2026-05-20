@@ -408,7 +408,7 @@ export default function MapView({
     if (places.length === 0) return;
 
     // Build supercluster
-    const sc = new Supercluster({ radius: 60, maxZoom: 16 });
+    const sc = new Supercluster({ radius: 60, maxZoom: 16, minPoints: 10 });
     sc.load(
       places.map((p) => ({
         type: "Feature" as const,

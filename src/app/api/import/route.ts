@@ -90,13 +90,21 @@ async function runImport(
 
   const supabase = createServerClient();
 
-  const { data: existingPlaces } = await supabase
-    .from("places")
-    .select("place_id, url")
-    .eq("user_session", sessionId)
-    .limit(100000);
-  const existingPlaceIds = new Set((existingPlaces ?? []).map((p) => p.place_id).filter(Boolean));
-  const existingUrls = new Set((existingPlaces ?? []).map((p) => p.url).filter(Boolean));
+  const DEDUP_PAGE = 1000;
+  const allExisting: { place_id: string | null; url: string | null }[] = [];
+  let dedupFrom = 0;
+  while (true) {
+    const { data: page } = await supabase
+      .from("places")
+      .select("place_id, url")
+      .eq("user_session", sessionId)
+      .range(dedupFrom, dedupFrom + DEDUP_PAGE - 1);
+    if (page && page.length > 0) allExisting.push(...page);
+    if (!page || page.length < DEDUP_PAGE) break;
+    dedupFrom += DEDUP_PAGE;
+  }
+  const existingPlaceIds = new Set(allExisting.map((p) => p.place_id).filter(Boolean));
+  const existingUrls = new Set(allExisting.map((p) => p.url).filter(Boolean));
 
   const rows = geocoded
     .filter((p) => {
