@@ -60,7 +60,11 @@ export default function ImportPanel({
               else if (event.phase === "saving") setProgressMsg("データを保存中...");
             } else if (event.type === "done") {
               setProgressMsg(null);
-              setSuccess(`${event.imported}件のスポットをインポートしました`);
+              const details: string[] = [];
+              if (event.duplicates > 0) details.push(`重複 ${event.duplicates}件スキップ`);
+              if (event.geocodeFailed > 0) details.push(`座標取得失敗 ${event.geocodeFailed}件`);
+              const suffix = details.length > 0 ? `（${details.join("、")}）` : "";
+              setSuccess(`${event.imported}件を新規追加しました${suffix}`);
               onImportComplete(event.imported);
               fetch("/api/enrich", {
                 method: "POST",

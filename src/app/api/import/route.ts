@@ -10,7 +10,7 @@ export const maxDuration = 300;
 type ProgressEvent =
   | { type: "progress"; phase: "geocoding"; current: number; total: number }
   | { type: "progress"; phase: "parsing" | "saving" }
-  | { type: "done"; imported: number }
+  | { type: "done"; imported: number; parsed: number; geocodeFailed: number; duplicates: number }
   | { type: "error"; message: string };
 
 async function runImport(
@@ -142,7 +142,9 @@ async function runImport(
     inserted += batch.length;
   }
 
-  onProgress({ type: "done", imported: inserted });
+  const geocodeFailed = withoutCoords.length - (geocoded.length - withCoords.length);
+  const duplicates = geocoded.length - rows.length;
+  onProgress({ type: "done", imported: inserted, parsed: parsed.length, geocodeFailed, duplicates });
 }
 
 export async function POST(req: NextRequest) {
