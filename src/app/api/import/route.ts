@@ -93,7 +93,8 @@ async function runImport(
   const { data: existingPlaces } = await supabase
     .from("places")
     .select("place_id, url")
-    .eq("user_session", sessionId);
+    .eq("user_session", sessionId)
+    .limit(100000);
   const existingPlaceIds = new Set((existingPlaces ?? []).map((p) => p.place_id).filter(Boolean));
   const existingUrls = new Set((existingPlaces ?? []).map((p) => p.url).filter(Boolean));
 

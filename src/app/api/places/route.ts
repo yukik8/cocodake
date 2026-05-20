@@ -12,7 +12,8 @@ export async function GET(req: NextRequest) {
     .from("places")
     .select("*")
     .eq("user_session", session)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(100000);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
