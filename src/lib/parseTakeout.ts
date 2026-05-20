@@ -239,7 +239,10 @@ export function extractCoordsFromUrl(
 }
 
 export function extractPlaceIdFromUrl(url: string): string | null {
-  const m1 = url.match(/place_id=([^&/\s]+)/);
+  // query_place_id= (Google Takeout CSV形式)
+  const m0 = url.match(/query_place_id=(ChIJ[^&/\s]+)/);
+  if (m0) return m0[1];
+  const m1 = url.match(/place_id=(ChIJ[^&/\s]+)/);
   if (m1) return m1[1];
   const m2 = url.match(/!1s(ChIJ[^!]+)/);
   if (m2) return m2[1];

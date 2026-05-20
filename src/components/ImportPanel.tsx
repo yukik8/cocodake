@@ -35,6 +35,7 @@ export default function ImportPanel({
 
         const res = await fetch("/api/import", {
           method: "POST",
+          headers: { "X-Stream": "true" },
           body: formData,
         });
 
