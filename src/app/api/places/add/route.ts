@@ -7,7 +7,7 @@ import {
   isTabelogUrl,
   fetchTabelogInfo,
 } from "@/lib/parseTakeout";
-import { enrichPlaceByCoords, enrichPlaceById, enrichPlaceByName } from "@/lib/placesApi";
+import { enrichPlaceByCoords, enrichPlaceById, enrichPlaceByName, geocodeAddress } from "@/lib/placesApi";
 
 const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
@@ -222,24 +222,40 @@ export async function POST(req: NextRequest) {
       placeId = extractPlaceIdFromUrl(resolvedUrl);
       console.log('[add]', JSON.stringify({ rawUrl: rawUrl.trim(), resolvedUrl, coords, placeId, nameFromUrl }));
       if (!coords && !placeId) {
-        // 店名がURLにある場合は Places API テキスト検索でフォールバック
-        if (nameFromUrl) {
-          console.log('[add] fallback enrichPlaceByName:', nameFromUrl);
-          const fallback = await enrichPlaceByName(nameFromUrl);
-          console.log('[add] fallback result:', JSON.stringify(fallback));
-          if (fallback?.place_id) {
-            placeId = fallback.place_id;
+        // /maps?q=住所+店名&ftid=... 形式（short URL展開後）
+        // → 住所をジオコードして座標を取得し、座標+店名で正確に検索する
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          const qParam = parsedResolved.searchParams.get("q");
+          if (qParam && (/〒\d{3}-\d{4}/.test(qParam) || /\d+\s*(?:Chome|丁目)/i.test(qParam))) {
+            // 住所内の店名を抽出（"2 Chome−10−2 店名" → "店名"）
+            const nameMatch = qParam.match(/\d+\s*(?:Chome[-−\d]+|丁目[-\d−-]*)\s+([^,〒]+?)(?:,|$)/i);
+            if (nameMatch?.[1]) nameFromUrl = nameMatch[1].trim();
+            // 住所全体をジオコードして座標を取得
+            const geocoded = await geocodeAddress(qParam);
+            if (geocoded) coords = geocoded;
+            console.log('[add] address geocode:', JSON.stringify({ nameFromUrl, coords }));
+          }
+        } catch { /* ignore */ }
+
+        if (!coords && !placeId) {
+          // 店名がURLにある場合は名前のみで検索（最終フォールバック）
+          if (nameFromUrl) {
+            const fallback = await enrichPlaceByName(nameFromUrl);
+            if (fallback?.place_id) {
+              placeId = fallback.place_id;
+            } else {
+              return NextResponse.json(
+                { error: "URLから座標を取得できませんでした。GoogleマップまたはTabelog（食べログ）のURLを貼り付けてください。" },
+                { status: 422 }
+              );
+            }
           } else {
             return NextResponse.json(
               { error: "URLから座標を取得できませんでした。GoogleマップまたはTabelog（食べログ）のURLを貼り付けてください。" },
               { status: 422 }
             );
           }
-        } else {
-          return NextResponse.json(
-            { error: "URLから座標を取得できませんでした。GoogleマップまたはTabelog（食べログ）のURLを貼り付けてください。" },
-            { status: 422 }
-          );
         }
       }
     } else {

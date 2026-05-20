@@ -13,6 +13,24 @@ export interface PlacesResult {
   lng: number | null;
 }
 
+// 住所文字列を座標に変換（Geocoding API）
+export async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
+  if (!PLACES_API_KEY) return null;
+  try {
+    const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+    url.searchParams.set("address", address);
+    url.searchParams.set("key", PLACES_API_KEY);
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+    const data = await res.json();
+    const location = data.results?.[0]?.geometry?.location;
+    if (!location) return null;
+    return { lat: location.lat, lng: location.lng };
+  } catch {
+    return null;
+  }
+}
+
 // 座標 + 名前で Find Place → place_id → Details
 export async function enrichPlaceByCoords(
   lat: number,

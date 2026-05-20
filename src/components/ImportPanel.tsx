@@ -17,6 +17,7 @@ export default function ImportPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [progressMsg, setProgressMsg] = useState<string | null>(null);
 
   // File upload
   const onDrop = useCallback(
@@ -36,25 +37,45 @@ export default function ImportPanel({
           method: "POST",
           body: formData,
         });
-        const data = await res.json();
 
-        if (!res.ok) {
-          setError(data.error || "インポートに失敗しました");
-          return;
+        if (!res.body) throw new Error("no response body");
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const event = JSON.parse(line.slice(6));
+            if (event.type === "progress") {
+              if (event.phase === "parsing") setProgressMsg("ファイルを解析中...");
+              else if (event.phase === "geocoding") setProgressMsg(`座標を取得中... (${event.current} / ${event.total}件)`);
+              else if (event.phase === "saving") setProgressMsg("データを保存中...");
+            } else if (event.type === "done") {
+              setProgressMsg(null);
+              setSuccess(`${event.imported}件のスポットをインポートしました`);
+              onImportComplete(event.imported);
+              fetch("/api/enrich", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ session: sessionId, limit: 50 }),
+              }).catch(() => {});
+            } else if (event.type === "error") {
+              setProgressMsg(null);
+              setError(event.message || "インポートに失敗しました");
+            }
+          }
         }
-
-        setSuccess(`${data.imported}件のスポットをインポートしました`);
-        onImportComplete(data.imported);
-
-        // Trigger background enrichment
-        fetch("/api/enrich", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session: sessionId, limit: 50 }),
-        }).catch(() => {});
       } catch {
         setError("通信エラーが発生しました");
       } finally {
+        setProgressMsg(null);
         setLoading(false);
       }
     },
@@ -145,7 +166,7 @@ export default function ImportPanel({
             {loading ? (
               <div className="flex flex-col items-center gap-2">
                 <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                <p className="text-sm text-gray-500">インポート中...</p>
+                <p className="text-sm text-gray-500">{progressMsg ?? "インポート中..."}</p>
               </div>
             ) : (
               <>
@@ -161,6 +182,13 @@ export default function ImportPanel({
               </>
             )}
           </div>
+
+          {loading && progressMsg && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+              {progressMsg}
+            </div>
+          )}
 
           <details className="text-xs text-gray-500">
             <summary className="cursor-pointer hover:text-gray-700">
@@ -178,10 +206,9 @@ export default function ImportPanel({
                 </a>{" "}
                 を開く
               </li>
-              <li>「Googleマップ」のみ選択</li>
-              <li>「保存済みの場所」にチェック</li>
+              <li>「すべて選択を解除」→「Saved（保存済み）」にチェック</li>
               <li>エクスポート実行 → メールリンクからDL</li>
-              <li>解凍して「保存済みの場所.json」をここにアップロード</li>
+              <li>解凍して「行ってみたい.csv」などをここにアップロード</li>
             </ol>
           </details>
         </div>
