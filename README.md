@@ -1,3 +1,5 @@
+*日本語は下に記載しています。*
+
 # cocodake
 
 > **Cocodake** — Crop any area from your saved spots and share just those places with friends.
@@ -90,8 +92,6 @@ npm run dev
 3. Click **🔗 Share N spots** → copy the URL → send to friends (no login required, link expires)
 
 ---
-
-*日本語は下に記載しています。*
 
 ---
 ---
