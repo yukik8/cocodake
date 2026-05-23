@@ -1,6 +1,39 @@
-# MapShare
+# cocodake
 
-Googleマップの保存済みスポットから特定エリアを切り取ってシェアできるWebアプリ。
+> **ここだけ** — 自分が保存したスポットから、行きたいエリアだけを切り取って友達に送れるアプリ。
+
+友達とどこに行くか決めるとき、保存したスポット全体は送れても、  
+「渋谷周辺だけ」「このエリアのここだけ」とピンポイントで切り取って送る方法がなかった。  
+cocodakeはその問題を解決する。
+
+**App Store**: [apps.apple.com/jp/app/cocodake/id6766069547](https://apps.apple.com/jp/app/cocodake/id6766069547)
+
+---
+
+## 機能
+
+- **スポット保存** — 場所を検索して自分のリストに追加、メモや編集も可能
+- **エリア切り取り** — 地図上をドラッグして範囲を選択、その中にあるスポットだけを抽出
+- **表示範囲選択** — 現在の地図の表示範囲内スポットをワンタップで一括選択
+- **ワンタップシェア** — 期限付き共有URLを生成、受け取り側はログイン不要
+- **インポート** — Google Takeout JSONまたはGoogle Maps URLからスポットを一括取り込み（初期セットアップ用）
+- **スポット補完** — Google Places APIで写真・評価・住所・カテゴリを自動取得
+- **Tabelogサポート** — TabelogのURLを貼るとメタデータを自動スクレイピング
+- **モバイルアプリ連携** — React Nativeアプリ（iOS/Android）と同一バックエンドを共有、OSのシェアシートから直接追加可能
+
+---
+
+## Tech Stack
+
+| レイヤー | 技術 |
+|---|---|
+| Web | Next.js (App Router) · TypeScript · Tailwind CSS |
+| Map | MapLibre GL · Supercluster（クラスタリング） |
+| DB | Supabase · PostgreSQL + PostGIS（空間クエリ） |
+| Native | React Native / Expo（iOS/Android） |
+| Native Bridge | Swift / Kotlin カスタムシェアエクステンション |
+
+---
 
 ## セットアップ
 
@@ -37,6 +70,7 @@ cp .env.local.example .env.local
 ### 5. 起動
 
 ```bash
+npm install
 npm run dev
 ```
 
@@ -46,46 +80,14 @@ npm run dev
 
 ## 使い方
 
-### インポート
-- **Google Takeout**: takeout.google.com → Googleマップ → 保存済みの場所 → DL → JSONをドロップ
+### スポットを追加する
+
+- **アプリ内で検索して追加**: 場所を検索してリストに保存
+- **Google Takeout**: takeout.google.com → Googleマップ → 保存済みの場所 → ダウンロード → JSONをドロップ
 - **URL直接追加**: GoogleマップのURLをペーストして追加
 
-### エリア選択 & シェア
+### 切り取って送る
+
 1. 「✂️ エリア選択」でドラッグ → 範囲内スポットが選択される
 2. 「表示中を選択」で地図の表示範囲内スポットを一括選択
-3. 「🔗 N件をシェア」→ URLを生成 → 友人に送る（ログイン不要）
-
----
-
-## Getting Started (original)
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+3. 「🔗 N件をシェア」→ URLを生成 → 友人に送る（ログイン不要・有効期限付き）
