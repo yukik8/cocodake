@@ -1,27 +1,128 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import Supercluster from "supercluster";
-import type { Place, BoundingBox } from "@/types";
+import type { Place, SharedPlace, BoundingBox } from "@/types";
+import { inBounds, normalizeBounds, sameIdSet } from "@/lib/geo";
+
+// The fields the map needs: the owner's places and a share's snapshot both have them
+type MapPlace = SharedPlace;
 
 interface MapViewProps {
-  places: Place[];
-  selectedIds: Set<string>;
-  onSelectPlace: (place: Place) => void;
+  places: MapPlace[];
+  selectedIds: ReadonlySet<string>;
+  onSelectPlace: (place: MapPlace) => void;
   selectionMode: boolean;
   onBoundingBoxChange?: (bbox: BoundingBox | null) => void;
   onVisiblePlacesChange?: (ids: Set<string>) => void;
   highlightedId?: string | null;
-  sessionId?: string;
-  onPlaceAdded?: () => void;
+  onPlaceAdded?: (place: Place) => void;
   focusedPlaceId?: string | null;
   onClearFocus?: () => void;
   readOnly?: boolean;
+  // The map fits all places when this changes (first show, after an import) — not after
+  // every single add or delete, which used to make the view jump.
+  fitVersion?: number;
+}
+
+interface SearchResult {
+  id: string;
+  name: string;
+  address: string;
+  lat: number | null;
+  lng: number | null;
+  place_id: string | null;
+}
+
+interface TapPreview {
+  lat: number | null;
+  lng: number | null;
+  name: string | null;
+  address: string | null;
+  category: string | null;
+  rating: number | null;
+  photo_url: string | null;
+  place_id?: string | null;
+  loading: boolean;
+  saving: boolean;
+}
+
+interface MarkerEntry {
+  marker: maplibregl.Marker;
+  el: HTMLDivElement;
+  placeId: string | null; // null for a cluster
 }
 
 const MAPTILER_KEY = process.env.NEXT_PUBLIC_MAPTILER_KEY || "";
+const CAROUSEL_MAX_DOTS = 20;
+const TEXT_HALO = "-1px -1px 0 #fff,1px -1px 0 #fff,-1px 1px 0 #fff,1px 1px 0 #fff";
+
+// Markers are built with DOM APIs and textContent: place names come from imported files
+// and shared lists, so they must never be parsed as HTML (stored XSS before).
+function createPlaceMarkerElement(place: MapPlace): HTMLDivElement {
+  const el = document.createElement("div");
+  el.className = "cursor-pointer";
+  el.style.cssText = "display:flex;flex-direction:column;align-items:center;";
+  const label = document.createElement("div");
+  label.style.cssText = `font-size:12px;font-weight:700;white-space:nowrap;margin-bottom:3px;letter-spacing:0.01em;text-shadow:${TEXT_HALO};`;
+  label.textContent = place.name || "";
+  const pin = document.createElement("div");
+  pin.style.cssText =
+    "border-radius:50% 50% 50% 0;width:14px;height:14px;transform:rotate(-45deg);border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);";
+  el.append(label, pin);
+  return el;
+}
+
+function paintPlaceMarker(el: HTMLDivElement, isSelected: boolean, isHighlighted: boolean) {
+  const [label, pin] = Array.from(el.children) as HTMLElement[];
+  label.style.color = isSelected ? "#059669" : "#dc2626";
+  pin.style.background = isSelected ? "#10B981" : isHighlighted ? "#F59E0B" : "#EF4444";
+}
+
+function createClusterElement(count: number): HTMLDivElement {
+  const el = document.createElement("div");
+  el.className = "cursor-pointer";
+  const size = Math.min(20 + count * 2, 50);
+  const bubble = document.createElement("div");
+  bubble.style.cssText = `background:#3B82F6;color:white;border-radius:50%;width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);`;
+  bubble.textContent = String(count);
+  el.append(bubble);
+  return el;
+}
+
+function createPopupContent(place: MapPlace): HTMLDivElement {
+  const box = document.createElement("div");
+  box.style.cssText = "font-size:13px;line-height:1.4";
+  const name = document.createElement("strong");
+  name.textContent = place.name || "名称不明";
+  box.append(name);
+  if (place.category) {
+    const category = document.createElement("span");
+    category.style.color = "#666";
+    category.textContent = place.category;
+    box.append(document.createElement("br"), category);
+  }
+  if (place.rating) {
+    box.append(document.createElement("br"), document.createTextNode(`⭐ ${place.rating}`));
+  }
+  return box;
+}
+
+function createTempMarkerElement(name: string): HTMLDivElement {
+  const el = document.createElement("div");
+  el.style.cssText = "display:flex;flex-direction:column;align-items:center;";
+  const label = document.createElement("div");
+  label.style.cssText =
+    "color:#2563eb;font-size:13px;font-weight:800;white-space:nowrap;margin-bottom:3px;text-shadow:0 0 4px white,0 0 4px white,0 0 4px white,0 0 6px white,1px 1px 0 white,-1px -1px 0 white,1px -1px 0 white,-1px 1px 0 white;";
+  label.textContent = name;
+  const pin = document.createElement("div");
+  pin.style.cssText =
+    "width:14px;height:14px;background:#2563eb;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);";
+  el.append(label, pin);
+  return el;
+}
 
 export default function MapView({
   places,
@@ -31,19 +132,20 @@ export default function MapView({
   onBoundingBoxChange,
   onVisiblePlacesChange,
   highlightedId,
-  sessionId,
   onPlaceAdded,
   focusedPlaceId,
   onClearFocus,
   readOnly = false,
+  fitVersion = 0,
 }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const clusterRef = useRef<Supercluster | null>(null);
-  const markersRef = useRef<maplibregl.Marker[]>([]);
+  const markersRef = useRef<Map<string, MarkerEntry>>(new Map());
   const tempMarkerRef = useRef<maplibregl.Marker | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const selectionBoxRef = useRef<HTMLDivElement | null>(null);
+  // マーカーがクリックされたかを追跡（マップclickと区別）
+  const markerClickedRef = useRef(false);
   const [isDrawing, setIsDrawing] = useState(false);
   const [bearing, setBearing] = useState(0);
 
@@ -53,23 +155,76 @@ export default function MapView({
   const carouselRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // マップタップで追加
+  const [tapPreview, setTapPreview] = useState<TapPreview | null>(null);
+
+  // 検索
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+
+  // The cluster index is built once per change of `places` — not on every pan, zoom,
+  // hover or selection change as before.
+  const index = useMemo(() => {
+    const sc = new Supercluster<{ place: MapPlace }>({ radius: 60, maxZoom: 16, minPoints: 10 });
+    sc.load(
+      places.map((p) => ({
+        type: "Feature" as const,
+        geometry: { type: "Point" as const, coordinates: [p.lng, p.lat] },
+        properties: { place: p },
+      }))
+    );
+    return sc;
+  }, [places]);
+
+  // Keep the latest props in refs so the map event handlers (registered once) read them
+  const indexRef = useRef(index);
+  const placesRef = useRef(places);
+  const selectedIdsRef = useRef(selectedIds);
+  const highlightedIdRef = useRef(highlightedId ?? null);
+  const onSelectPlaceRef = useRef(onSelectPlace);
+  const onBoundingBoxChangeRef = useRef(onBoundingBoxChange);
+  const onVisiblePlacesChangeRef = useRef(onVisiblePlacesChange);
+  const selectionModeRef = useRef(selectionMode);
+  const readOnlyRef = useRef(readOnly);
+  const lastVisibleRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    indexRef.current = index;
+    placesRef.current = places;
+    selectedIdsRef.current = selectedIds;
+    highlightedIdRef.current = highlightedId ?? null;
+    onSelectPlaceRef.current = onSelectPlace;
+    onBoundingBoxChangeRef.current = onBoundingBoxChange;
+    onVisiblePlacesChangeRef.current = onVisiblePlacesChange;
+    selectionModeRef.current = selectionMode;
+    readOnlyRef.current = readOnly;
+  });
+
   // focusedPlaceId が変わったらカルーセルを開いて該当カードへ
+  // (state is adjusted during render; the effect below only scrolls and moves the map)
+  const [prevFocusedId, setPrevFocusedId] = useState(focusedPlaceId);
+  if (focusedPlaceId !== prevFocusedId) {
+    setPrevFocusedId(focusedPlaceId);
+    const i = focusedPlaceId ? places.findIndex((p) => p.id === focusedPlaceId) : -1;
+    if (i !== -1) {
+      setCarouselOpen(true);
+      setCarouselIndex(i);
+      setTapPreview(null);
+    }
+  }
   useEffect(() => {
     if (!focusedPlaceId) return;
-    const index = places.findIndex((p) => p.id === focusedPlaceId);
-    if (index === -1) return;
-    setCarouselOpen(true);
-    setCarouselIndex(index);
-    setTapPreview(null);
+    const i = places.findIndex((p) => p.id === focusedPlaceId);
+    if (i === -1) return;
     // カルーセルが描画された後にスクロール
     requestAnimationFrame(() => {
       const container = carouselRef.current;
       if (!container) return;
-      const card = container.children[index] as HTMLElement | undefined;
+      const card = container.children[i] as HTMLElement | undefined;
       card?.scrollIntoView({ behavior: "instant", block: "nearest", inline: "center" });
     });
     const map = mapRef.current;
-    const place = places[index];
+    const place = places[i];
     if (map && place) {
       map.flyTo({ center: [place.lng, place.lat], zoom: Math.max(map.getZoom(), 14), duration: 600 });
     }
@@ -82,82 +237,26 @@ export default function MapView({
       const container = carouselRef.current;
       if (!container) return;
       const cardWidth = (container.children[0] as HTMLElement)?.offsetWidth ?? container.offsetWidth;
-      const index = Math.round(container.scrollLeft / (cardWidth + 12)); // 12 = gap
-      const place = places[index];
+      const i = Math.round(container.scrollLeft / (cardWidth + 12)); // 12 = gap
+      const place = placesRef.current[i];
       if (!place) return;
-      setCarouselIndex(index);
+      setCarouselIndex(i);
       mapRef.current?.flyTo({
         center: [place.lng, place.lat],
         zoom: Math.max(mapRef.current.getZoom(), 14),
         duration: 400,
       });
     }, 100);
-  }, [places]);
-
-  // マップタップで追加
-  const [tapPreview, setTapPreview] = useState<{
-    lat: number; lng: number;
-    name: string | null; address: string | null;
-    category: string | null; rating: number | null; photo_url: string | null;
-    place_id?: string | null;
-    loading: boolean; saving: boolean;
-  } | null>(null);
-
-  // 検索
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<
-    { id: string; name: string; address: string; lat: number; lng: number; place_id?: string }[]
-  >([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-
-  // Keep callbacks in refs so they never appear in dependency arrays
-  const onSelectPlaceRef = useRef(onSelectPlace);
-  const onBoundingBoxChangeRef = useRef(onBoundingBoxChange);
-  const onVisiblePlacesChangeRef = useRef(onVisiblePlacesChange);
-  const selectionModeRef = useRef(selectionMode);
-  useEffect(() => { onSelectPlaceRef.current = onSelectPlace; }, [onSelectPlace]);
-  useEffect(() => { onBoundingBoxChangeRef.current = onBoundingBoxChange; }, [onBoundingBoxChange]);
-  useEffect(() => { onVisiblePlacesChangeRef.current = onVisiblePlacesChange; }, [onVisiblePlacesChange]);
-  useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
+  }, []);
 
   // タッププレビューの一時ピン
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
-
-    // 前の一時ピンを削除
     tempMarkerRef.current?.remove();
     tempMarkerRef.current = null;
+    if (!map || !tapPreview || tapPreview.lat == null || tapPreview.lng == null) return;
 
-    if (!tapPreview) return;
-
-    const el = document.createElement("div");
-    el.innerHTML = `
-      <div style="display:flex;flex-direction:column;align-items:center;">
-        <div style="
-          color:#2563eb;
-          font-size:13px;
-          font-weight:800;
-          white-space:nowrap;
-          margin-bottom:3px;
-          text-shadow:
-            0 0 4px white, 0 0 4px white, 0 0 4px white,
-            0 0 6px white,
-            1px 1px 0 white, -1px -1px 0 white,
-            1px -1px 0 white, -1px 1px 0 white;
-        ">${tapPreview.name || "..."}</div>
-        <div style="
-          width:14px;height:14px;
-          background:#2563eb;
-          border-radius:50% 50% 50% 0;
-          transform:rotate(-45deg);
-          border:2px solid white;
-          box-shadow:0 2px 4px rgba(0,0,0,0.3);
-        "></div>
-      </div>
-    `;
-
-    const marker = new maplibregl.Marker({ element: el, anchor: "bottom" })
+    const marker = new maplibregl.Marker({ element: createTempMarkerElement(tapPreview.name || "..."), anchor: "bottom" })
       .setLngLat([tapPreview.lng, tapPreview.lat])
       .addTo(map);
     tempMarkerRef.current = marker;
@@ -166,7 +265,7 @@ export default function MapView({
       marker.remove();
       tempMarkerRef.current = null;
     };
-  }, [tapPreview]);
+  }, [tapPreview?.lat, tapPreview?.lng, tapPreview?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // エリア選択中はマップのドラッグを無効化
   useEffect(() => {
@@ -180,6 +279,76 @@ export default function MapView({
       map.dragRotate.enable();
     }
   }, [selectionMode]);
+
+  // Report the places inside the view — only when the set actually changed, so panning
+  // doesn't re-render the whole page and list each time.
+  const updateVisiblePlaces = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || !onVisiblePlacesChangeRef.current) return;
+    const b = map.getBounds();
+    const bbox = normalizeBounds(b.getWest(), b.getSouth(), b.getEast(), b.getNorth());
+    const visible = new Set<string>();
+    for (const p of placesRef.current) if (inBounds(p, bbox)) visible.add(p.id);
+    if (lastVisibleRef.current && sameIdSet(lastVisibleRef.current, visible)) return;
+    lastVisibleRef.current = visible;
+    onVisiblePlacesChangeRef.current(visible);
+  }, []);
+
+  // Sync markers with the clusters in view: markers that stay in view are kept as they
+  // are, only the ones that appear or disappear are added or removed.
+  const renderMarkers = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const sc = indexRef.current;
+    const b = map.getBounds();
+    const clusters = sc.getClusters([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], Math.floor(map.getZoom()));
+
+    const markers = markersRef.current;
+    const keep = new Set<string>();
+    for (const cluster of clusters) {
+      const [lng, lat] = cluster.geometry.coordinates;
+      const props = cluster.properties as { cluster?: boolean; cluster_id?: number; point_count?: number; place?: MapPlace };
+      const key = props.cluster ? `c:${props.cluster_id}` : `p:${props.place!.id}`;
+      keep.add(key);
+      if (markers.has(key)) continue;
+
+      if (props.cluster) {
+        const el = createClusterElement(props.point_count ?? 0);
+        const clusterId = props.cluster_id!;
+        el.addEventListener("click", (e) => {
+          markerClickedRef.current = true;
+          e.stopPropagation();
+          const newZoom = indexRef.current.getClusterExpansionZoom(clusterId);
+          map.flyTo({ center: [lng, lat], zoom: newZoom });
+        });
+        const marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(map);
+        markers.set(key, { marker, el, placeId: null });
+      } else {
+        const place = props.place!;
+        const el = createPlaceMarkerElement(place);
+        paintPlaceMarker(el, selectedIdsRef.current.has(place.id), place.id === highlightedIdRef.current);
+        el.addEventListener("click", (e) => {
+          // マップのclickイベントが後から発火しないようにフラグを立てる
+          markerClickedRef.current = true;
+          onSelectPlaceRef.current(place);
+          e.stopPropagation();
+        });
+        const popup = new maplibregl.Popup({ offset: 25, closeButton: false, maxWidth: "200px" }).setDOMContent(
+          createPopupContent(place)
+        );
+        const marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).setPopup(popup).addTo(map);
+        markers.set(key, { marker, el, placeId: place.id });
+      }
+    }
+    for (const [key, entry] of markers) {
+      if (!keep.has(key)) {
+        entry.marker.remove();
+        markers.delete(key);
+      }
+    }
+
+    updateVisiblePlaces();
+  }, [updateVisiblePlaces]);
 
   // Initialize map
   useEffect(() => {
@@ -203,23 +372,20 @@ export default function MapView({
       "bottom-right"
     );
 
-    map.on('rotate', () => setBearing(map.getBearing()));
+    map.on("rotate", () => setBearing(map.getBearing()));
+    map.on("load", renderMarkers);
+    map.on("moveend", renderMarkers);
 
     mapRef.current = map;
-
-    // マーカーがクリックされたかを追跡（マップclickと区別）
-    let markerClicked = false;
-    (map as maplibregl.Map & { _markerClicked?: () => void })._markerClicked = () => {
-      markerClicked = true;
-    };
+    const markers = markersRef.current;
 
     // マップクリックで場所追加
     let abortCtrl: AbortController | null = null;
     let tapping = false; // 処理中は多重発火を防ぐ
     map.on("click", (e) => {
-      if (readOnly) return;
+      if (readOnlyRef.current) return;
       if (selectionModeRef.current) return;
-      if (markerClicked) { markerClicked = false; return; }
+      if (markerClickedRef.current) { markerClickedRef.current = false; return; }
       if (tapping) return;
       tapping = true;
 
@@ -245,21 +411,19 @@ export default function MapView({
       fetch(apiUrl, { signal: abortCtrl.signal })
         .then((r) => r.json())
         .then((data) => {
-          if (data.place_id) {
-            setTapPreview((prev) => prev ? {
-              ...prev,
-              name: data.name || poiName,
-              address: data.address,
-              category: data.category ?? null,
-              rating: data.rating ?? null,
-              photo_url: data.photo_url ?? null,
-              place_id: data.place_id,
-              loading: false,
-            } : null);
-          } else {
-            // Google Places で見つからなかった（Nominatimフォールバック）
-            setTapPreview((prev) => prev ? { ...prev, ...data, name: data.name || poiName, loading: false } : null);
-          }
+          setTapPreview((prev) => prev ? {
+            ...prev,
+            name: data.name || poiName,
+            address: data.address ?? null,
+            category: data.category ?? null,
+            rating: data.rating ?? null,
+            photo_url: data.photo_url ?? null,
+            place_id: data.place_id ?? null,
+            // the matched place's own position when the server found one nearby
+            lat: typeof data.lat === "number" ? data.lat : prev.lat,
+            lng: typeof data.lng === "number" ? data.lng : prev.lng,
+            loading: false,
+          } : null);
         })
         .catch((err) => {
           if (err.name !== "AbortError") setTapPreview(null);
@@ -269,16 +433,52 @@ export default function MapView({
 
     return () => {
       abortCtrl?.abort();
+      markers.clear();
       map.remove();
       mapRef.current = null;
     };
-  }, []);
+  }, [renderMarkers]);
 
-  // 検索（Nominatim）— 500msデバウンス
+  // A new set of places means a new cluster index: rebuild the markers once
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const entry of markersRef.current.values()) entry.marker.remove();
+    markersRef.current.clear();
+    lastVisibleRef.current = null;
+    if (map.isStyleLoaded()) renderMarkers();
+  }, [index, renderMarkers]);
+
+  // Selection and hover only recolour the markers already on the map
+  useEffect(() => {
+    for (const entry of markersRef.current.values()) {
+      if (entry.placeId) paintPlaceMarker(entry.el, selectedIds.has(entry.placeId), entry.placeId === highlightedId);
+    }
+  }, [selectedIds, highlightedId]);
+
+  // Fit to all places on first show and whenever fitVersion changes
+  const lastFitRef = useRef<number | null>(null);
+  const hasPlaces = places.length > 0;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !hasPlaces || lastFitRef.current === fitVersion) return;
+    lastFitRef.current = fitVersion;
+
+    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+    for (const p of placesRef.current) {
+      if (p.lng < minLng) minLng = p.lng;
+      if (p.lng > maxLng) maxLng = p.lng;
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+    }
+    map.fitBounds(new maplibregl.LngLatBounds([minLng, minLat], [maxLng, maxLat]), { padding: 80, maxZoom: 14, duration: 800 });
+  }, [fitVersion, hasPlaces]);
+
+  // 検索 — 500msデバウンス
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleSearch = useCallback((q: string) => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    if (!q.trim()) { setSearchResults([]); return; }
+    if (!q.trim()) { setSearchResults([]); setSearchLoading(false); return; }
     setSearchLoading(true);
     searchTimerRef.current = setTimeout(async () => {
       try {
@@ -287,7 +487,7 @@ export default function MapView({
         const locParam = center ? `&lat=${center.lat}&lng=${center.lng}` : "";
         const res = await fetch(`/api/search?q=${encodeURIComponent(q)}${locParam}`);
         const data = await res.json();
-        setSearchResults(data);
+        setSearchResults(Array.isArray(data) ? data : []);
       } catch {
         // ignore
       } finally {
@@ -296,10 +496,12 @@ export default function MapView({
     }, 500);
   }, []);
 
-  const handleSearchSelect = useCallback((result: { id: string; name: string; address: string; lat: number; lng: number }) => {
+  const handleSearchSelect = useCallback((result: SearchResult) => {
     const map = mapRef.current;
     if (!map) return;
-    map.flyTo({ center: [result.lng, result.lat], zoom: 16, duration: 500 });
+    if (result.lat != null && result.lng != null) {
+      map.flyTo({ center: [result.lng, result.lat], zoom: 16, duration: 500 });
+    }
     setSearchResults([]);
     setSearchQuery("");
     // まず名前だけ表示してローディング状態に
@@ -311,14 +513,27 @@ export default function MapView({
       category: null,
       rating: null,
       photo_url: null,
-      place_id: result.id,
+      place_id: result.place_id,
       loading: true,
       saving: false,
     });
-    // place_idで写真・評価・カテゴリを取得
-    fetch(`/api/places/add?place_id=${encodeURIComponent(result.id)}`)
+    // Google の候補は place_id で座標・写真・評価・カテゴリを取得（候補には座標がない）。
+    // それ以外（MapTiler / Nominatim）は座標と名前でプレビュー
+    const previewUrl = result.place_id
+      ? `/api/places/add?place_id=${encodeURIComponent(result.place_id)}`
+      : `/api/places/add?lat=${result.lat}&lng=${result.lng}&name=${encodeURIComponent(result.name)}`;
+    fetch(previewUrl)
       .then((r) => r.json())
       .then((data) => {
+        const lat = typeof data.lat === "number" ? data.lat : result.lat;
+        const lng = typeof data.lng === "number" ? data.lng : result.lng;
+        if (lat == null || lng == null) {
+          setTapPreview(null);
+          return;
+        }
+        if (result.lat == null || result.lng == null) {
+          mapRef.current?.flyTo({ center: [lng, lat], zoom: 16, duration: 500 });
+        }
         setTapPreview((prev) => prev ? {
           ...prev,
           name: data.name || prev.name,
@@ -326,27 +541,27 @@ export default function MapView({
           category: data.category ?? prev.category,
           rating: data.rating ?? prev.rating,
           photo_url: data.photo_url ?? prev.photo_url,
-          lat: data.lat ?? prev.lat,
-          lng: data.lng ?? prev.lng,
+          place_id: data.place_id ?? prev.place_id,
+          lat,
+          lng,
           loading: false,
         } : null);
       })
       .catch(() => {
-        setTapPreview((prev) => prev ? { ...prev, loading: false } : null);
+        setTapPreview((prev) => prev && prev.lat != null ? { ...prev, loading: false } : null);
       });
   }, []);
 
   // タップ追加を確定する
   const handleTapSave = useCallback(async () => {
-    if (!tapPreview || !sessionId) return;
+    if (!tapPreview || tapPreview.lat == null || tapPreview.lng == null || readOnly) return;
     setTapPreview((p) => p ? { ...p, saving: true } : null);
     try {
       const body: Record<string, unknown> = {
         lat: tapPreview.lat,
         lng: tapPreview.lng,
-        session: sessionId,
       };
-      // 検索結果から追加の場合はplace_idと全情報を渡してサーバー側の再検索を省略
+      // プレビューで place_id が取れていれば全情報を渡してサーバー側の再検索を省略
       if (tapPreview.place_id) {
         body.place_id = tapPreview.place_id;
         body.name = tapPreview.name;
@@ -360,221 +575,21 @@ export default function MapView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      const data = await res.json().catch(() => ({}));
       if (res.status === 409) {
         // 重複
         alert("このスポットはすでにリストに追加されています");
-        setTapPreview(null);
-        return;
+      } else if (!res.ok) {
+        alert(data.error || "追加に失敗しました");
+      } else if (data.place) {
+        // 保存したスポットだけを足す（全件を読み直さない）
+        onPlaceAdded?.(data.place);
       }
       setTapPreview(null);
-      onPlaceAdded?.();
     } catch {
       setTapPreview(null);
     }
-  }, [tapPreview, sessionId, onPlaceAdded]);
-
-  // Compute visible places on map move — uses refs to avoid dependency churn
-  const placesRef = useRef(places);
-  useEffect(() => { placesRef.current = places; }, [places]);
-
-  const updateVisiblePlaces = useCallback(() => {
-    const map = mapRef.current;
-    if (!map || !onVisiblePlacesChangeRef.current) return;
-
-    const bounds = map.getBounds();
-    const visible = new Set<string>();
-    for (const p of placesRef.current) {
-      if (
-        p.lng >= bounds.getWest() &&
-        p.lng <= bounds.getEast() &&
-        p.lat >= bounds.getSouth() &&
-        p.lat <= bounds.getNorth()
-      ) {
-        visible.add(p.id);
-      }
-    }
-    onVisiblePlacesChangeRef.current(visible);
-  }, []); // stable — no deps needed
-
-  // Render markers with clustering
-  const renderMarkers = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    // Clear old markers
-    markersRef.current.forEach((m) => m.remove());
-    markersRef.current = [];
-
-    if (places.length === 0) return;
-
-    // Build supercluster
-    const sc = new Supercluster({ radius: 60, maxZoom: 16, minPoints: 10 });
-    sc.load(
-      places.map((p) => ({
-        type: "Feature" as const,
-        geometry: { type: "Point" as const, coordinates: [p.lng, p.lat] },
-        properties: { id: p.id, place: p },
-      }))
-    );
-    clusterRef.current = sc;
-
-    const zoom = Math.floor(map.getZoom());
-    const bounds = map.getBounds();
-    const bbox: [number, number, number, number] = [
-      bounds.getWest(),
-      bounds.getSouth(),
-      bounds.getEast(),
-      bounds.getNorth(),
-    ];
-
-    const clusters = sc.getClusters(bbox, zoom);
-
-    for (const cluster of clusters) {
-      const [lng, lat] = cluster.geometry.coordinates;
-      const el = document.createElement("div");
-
-      if (cluster.properties.cluster) {
-        // Cluster marker
-        const count = cluster.properties.point_count;
-        el.className = "cursor-pointer";
-        el.innerHTML = `
-          <div style="
-            background: #3B82F6;
-            color: white;
-            border-radius: 50%;
-            width: ${Math.min(20 + count * 2, 50)}px;
-            height: ${Math.min(20 + count * 2, 50)}px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            font-weight: bold;
-            border: 2px solid white;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-          ">${count}</div>
-        `;
-
-        el.addEventListener("click", (e) => {
-          const m = mapRef.current as (maplibregl.Map & { _markerClicked?: () => void }) | null;
-          m?._markerClicked?.();
-          e.stopPropagation();
-          const newZoom = sc.getClusterExpansionZoom(cluster.properties.cluster_id);
-          map.flyTo({ center: [lng, lat], zoom: newZoom });
-        });
-
-        const marker = new maplibregl.Marker({ element: el })
-          .setLngLat([lng, lat])
-          .addTo(map);
-        markersRef.current.push(marker);
-      } else {
-        // Single place marker
-        const place = cluster.properties.place as Place;
-        const isSelected = selectedIds.has(place.id);
-        const isHighlighted = place.id === highlightedId;
-
-        const color = isSelected ? "#10B981" : isHighlighted ? "#F59E0B" : "#EF4444";
-        const name = place.name || "";
-        el.className = "cursor-pointer";
-        el.style.cssText = "display:flex;flex-direction:column;align-items:center;";
-        el.innerHTML = `
-          <div style="
-            color:${isSelected ? "#059669" : "#dc2626"};
-            font-size:12px;
-            font-weight:700;
-            white-space:nowrap;
-            margin-bottom:3px;
-            letter-spacing:0.01em;
-            text-shadow:-1px -1px 0 #fff,1px -1px 0 #fff,-1px 1px 0 #fff,1px 1px 0 #fff;
-          ">${name}</div>
-          <div style="
-            background:${color};
-            border-radius:50% 50% 50% 0;
-            width:14px;
-            height:14px;
-            transform:rotate(-45deg);
-            border:2px solid white;
-            box-shadow:0 2px 4px rgba(0,0,0,0.3);
-          "></div>
-        `;
-
-        el.addEventListener("click", (e) => {
-          // マップのclickイベントが後から発火しないようにフラグを立てる
-          const m = mapRef.current as (maplibregl.Map & { _markerClicked?: () => void }) | null;
-          m?._markerClicked?.();
-          onSelectPlaceRef.current(place);
-          e.stopPropagation();
-        });
-
-        const popup = new maplibregl.Popup({
-          offset: 25,
-          closeButton: false,
-          maxWidth: "200px",
-        }).setHTML(
-          `<div style="font-size:13px;line-height:1.4">
-            <strong>${place.name || "名称不明"}</strong>
-            ${place.category ? `<br/><span style="color:#666">${place.category}</span>` : ""}
-            ${place.rating ? `<br/>⭐ ${place.rating}` : ""}
-          </div>`
-        );
-
-        const marker = new maplibregl.Marker({ element: el })
-          .setLngLat([lng, lat])
-          .setPopup(popup)
-          .addTo(map);
-
-        markersRef.current.push(marker);
-      }
-    }
-
-    updateVisiblePlaces();
-  }, [places, selectedIds, highlightedId, updateVisiblePlaces]);
-
-  // Re-render markers when data changes
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    if (map.isStyleLoaded()) {
-      renderMarkers();
-    } else {
-      map.once("load", renderMarkers);
-    }
-
-    const onMoveEnd = () => {
-      renderMarkers();
-    };
-
-    map.on("moveend", onMoveEnd);
-    return () => {
-      map.off("moveend", onMoveEnd);
-    };
-  }, [renderMarkers]);
-
-  // Auto-fit to places
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || places.length === 0) return;
-
-    const validPlaces = places.filter(
-      (p) => p.lat != null && p.lng != null
-    );
-    if (validPlaces.length === 0) return;
-
-    const lngs = validPlaces.map((p) => p.lng);
-    const lats = validPlaces.map((p) => p.lat);
-
-    const bounds = new maplibregl.LngLatBounds(
-      [Math.min(...lngs), Math.min(...lats)],
-      [Math.max(...lngs), Math.max(...lats)]
-    );
-
-    map.fitBounds(bounds, { padding: 80, maxZoom: 14, duration: 800 });
-  }, [places.length]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // highlightedId changes → just re-render markers with new color (no flyTo)
-  useEffect(() => {
-    if (mapRef.current?.isStyleLoaded()) renderMarkers();
-  }, [highlightedId, renderMarkers]);
+  }, [tapPreview, readOnly, onPlaceAdded]);
 
   // Bounding box drawing
   const handleMouseDown = useCallback(
@@ -641,12 +656,7 @@ export default function MapView({
         Math.min(start.y, end.y) - rect.top,
       ]);
 
-      const bbox: BoundingBox = {
-        minLng: sw.lng,
-        minLat: sw.lat,
-        maxLng: ne.lng,
-        maxLat: ne.lat,
-      };
+      const bbox = normalizeBounds(sw.lng, sw.lat, ne.lng, ne.lat);
 
       if (onBoundingBoxChangeRef.current) {
         const width = Math.abs(e.clientX - start.x);
@@ -753,6 +763,7 @@ export default function MapView({
             <>
               <div className="flex gap-3 p-4">
                 {tapPreview.photo_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- photos come from our /api/photo redirect
                   <img src={tapPreview.photo_url} className="w-16 h-16 rounded-xl object-cover flex-shrink-0" alt="" />
                 ) : (
                   <div className="w-16 h-16 rounded-xl bg-gray-100 flex items-center justify-center text-2xl flex-shrink-0">📍</div>
@@ -804,8 +815,8 @@ export default function MapView({
               閉じる
             </button>
           </div>
-          {/* インジケーター */}
-          {places.length > 1 && (
+          {/* インジケーター（件数が多いときは「n / 全体」） */}
+          {places.length > 1 && places.length <= CAROUSEL_MAX_DOTS && (
             <div className="flex justify-center gap-1 mb-2">
               {places.map((_, i) => (
                 <div
@@ -815,7 +826,14 @@ export default function MapView({
               ))}
             </div>
           )}
-          {/* カード列 */}
+          {places.length > CAROUSEL_MAX_DOTS && (
+            <div className="flex justify-center mb-2">
+              <span className="text-xs text-gray-500 bg-white/80 rounded-full px-2 py-0.5 shadow">
+                {carouselIndex + 1} / {places.length}
+              </span>
+            </div>
+          )}
+          {/* カード列 — 画面外のカードは描画を省く（content-visibility）、写真は近づいてから読む */}
           <div
             ref={carouselRef}
             onScroll={handleCarouselScroll}
@@ -826,10 +844,12 @@ export default function MapView({
               <div
                 key={place.id}
                 className="flex-shrink-0 w-72 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden snap-center"
+                style={{ contentVisibility: "auto", containIntrinsicSize: "288px 128px" }}
               >
                 <div className="flex gap-3 p-4">
                   {place.photo_url ? (
-                    <img src={place.photo_url} className="w-14 h-14 rounded-xl object-cover flex-shrink-0" alt="" />
+                    // eslint-disable-next-line @next/next/no-img-element -- photos come from our /api/photo redirect
+                    <img src={place.photo_url} loading="lazy" decoding="async" className="w-14 h-14 rounded-xl object-cover flex-shrink-0" alt="" />
                   ) : (
                     <div className="w-14 h-14 rounded-xl bg-gray-100 flex items-center justify-center text-xl flex-shrink-0">📍</div>
                   )}

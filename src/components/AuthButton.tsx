@@ -26,6 +26,7 @@ export default function AuthButton() {
   return (
     <div className="flex items-center gap-2">
       {user.user_metadata?.avatar_url && (
+        // eslint-disable-next-line @next/next/no-img-element -- a 32px Google avatar; next/image would need remotePatterns for no gain
         <img
           src={user.user_metadata.avatar_url}
           alt={user.user_metadata?.full_name || ""}

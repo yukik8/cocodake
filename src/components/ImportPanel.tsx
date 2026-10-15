@@ -2,14 +2,14 @@
 
 import { useState, useCallback } from "react";
 import { useDropzone } from "react-dropzone";
+import type { Place } from "@/types";
 
 interface ImportPanelProps {
-  sessionId: string;
-  onImportComplete: (count: number) => void;
+  // place: the single spot added from a URL; absent after a file import (reload the list)
+  onImportComplete: (result: { place?: Place }) => void;
 }
 
 export default function ImportPanel({
-  sessionId,
   onImportComplete,
 }: ImportPanelProps) {
   const [mode, setMode] = useState<"file" | "url">("file");
@@ -31,7 +31,6 @@ export default function ImportPanel({
       try {
         const formData = new FormData();
         formData.append("file", file);
-        formData.append("session", sessionId);
 
         const res = await fetch("/api/import", {
           method: "POST",
@@ -39,6 +38,11 @@ export default function ImportPanel({
           body: formData,
         });
 
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setError(data.error || "インポートに失敗しました");
+          return;
+        }
         if (!res.body) throw new Error("no response body");
 
         const reader = res.body.getReader();
@@ -65,11 +69,11 @@ export default function ImportPanel({
               if (event.geocodeFailed > 0) details.push(`座標取得失敗 ${event.geocodeFailed}件`);
               const suffix = details.length > 0 ? `（${details.join("、")}）` : "";
               setSuccess(`${event.imported}件を新規追加しました${suffix}`);
-              onImportComplete(event.imported);
+              onImportComplete({});
               fetch("/api/enrich", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ session: sessionId, limit: 50 }),
+                body: JSON.stringify({ limit: 50 }),
               }).catch(() => {});
             } else if (event.type === "error") {
               setProgressMsg(null);
@@ -84,7 +88,7 @@ export default function ImportPanel({
         setLoading(false);
       }
     },
-    [sessionId, onImportComplete]
+    [onImportComplete]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -109,7 +113,7 @@ export default function ImportPanel({
       const res = await fetch("/api/places/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim(), session: sessionId }),
+        body: JSON.stringify({ url: url.trim() }),
       });
       const data = await res.json();
 
@@ -120,7 +124,7 @@ export default function ImportPanel({
 
       setSuccess(`「${data.place.name}」を追加しました`);
       setUrl("");
-      onImportComplete(1);
+      onImportComplete({ place: data.place });
     } catch {
       setError("通信エラーが発生しました");
     } finally {

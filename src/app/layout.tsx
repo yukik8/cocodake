@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MapShare - Googleマップのリストをエリア共有",
+  title: "cocodake - Googleマップのリストをエリア共有",
   description:
     "Googleマップの保存済みスポットから特定エリアを切り取ってシェアできるアプリ",
 };

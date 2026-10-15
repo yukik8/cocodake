@@ -2,15 +2,17 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
-import type { Place, BoundingBox } from "@/types";
+import type { Place, SharedPlace, BoundingBox } from "@/types";
 import { useAuth } from "@/lib/useAuth";
+import { inBounds } from "@/lib/geo";
 import PlacesList from "@/components/PlacesList";
 import ImportPanel from "@/components/ImportPanel";
 import SharePanel from "@/components/SharePanel";
 import AuthButton from "@/components/AuthButton";
 import LoginScreen from "@/components/LoginScreen";
 
-const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
+const loadMapView = () => import("@/components/MapView");
+const MapView = dynamic(loadMapView, { ssr: false });
 
 type Tab = "map" | "list" | "import";
 
@@ -23,40 +25,59 @@ export default function Home() {
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set());
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [focusedPlaceId, setFocusedPlaceId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // until the first list arrives
   const [activeTab, setActiveTab] = useState<Tab>("map");
   const [selectionMode, setSelectionMode] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [filterToVisible, setFilterToVisible] = useState(false);
+  const [fitVersion, setFitVersion] = useState(0);
 
-  const loadPlaces = useCallback(async (session: string) => {
-    if (!session) return;
+  // The map code (MapLibre, the largest chunk) starts downloading right away, in parallel
+  // with the places request — before, it only started once the places had arrived.
+  useEffect(() => {
+    void loadMapView();
+  }, []);
+
+  // The server identifies the user from the session cookie; no user ID in the URL.
+  const fetchPlaces = useCallback(async (): Promise<Place[] | null> => {
+    const res = await fetch("/api/places");
+    const data = await res.json().catch(() => null);
+    return res.ok && Array.isArray(data?.places) ? data.places : null;
+  }, []);
+
+  // Reload after an import, and fit the map to the new set
+  const loadPlaces = useCallback(async (options?: { fit?: boolean }) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/places?session=${session}`);
-      const data = await res.json();
-      if (data.places) setPlaces(data.places);
+      const next = await fetchPlaces();
+      if (next) {
+        setPlaces(next);
+        if (options?.fit) setFitVersion((v) => v + 1);
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchPlaces]);
 
   useEffect(() => {
-    if (sessionId) loadPlaces(sessionId);
-  }, [sessionId, loadPlaces]);
+    if (!sessionId) return;
+    let cancelled = false;
+    fetchPlaces()
+      .then((next) => {
+        if (!cancelled && next) setPlaces(next);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, fetchPlaces]);
 
   const handleBoundingBoxChange = useCallback(
     (bbox: BoundingBox | null) => {
       if (!bbox) return;
-      const inBox = places
-        .filter(
-          (p) =>
-            p.lng >= bbox.minLng &&
-            p.lng <= bbox.maxLng &&
-            p.lat >= bbox.minLat &&
-            p.lat <= bbox.maxLat
-        )
-        .map((p) => p.id);
+      const inBox = places.filter((p) => inBounds(p, bbox)).map((p) => p.id);
       setSelectedIds(new Set(inBox));
       setSelectionMode(false);
     },
@@ -83,21 +104,47 @@ export default function Home() {
     setSelectedIds(new Set());
   }, []);
 
-  const handleDelete = useCallback(
-    async (id: string) => {
-      await fetch("/api/places", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, session: sessionId }),
-      });
-      setPlaces((prev) => prev.filter((p) => p.id !== id));
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
+  const handleDelete = useCallback(async (id: string) => {
+    const res = await fetch("/api/places", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) {
+      alert("削除に失敗しました");
+      return;
+    }
+    setPlaces((prev) => prev.filter((p) => p.id !== id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  // A single new spot is added to the list as returned by the server (no full reload)
+  const handlePlaceAdded = useCallback((place: Place) => {
+    setPlaces((prev) => [place, ...prev.filter((p) => p.id !== place.id)]);
+  }, []);
+
+  const handleImportComplete = useCallback(
+    (result: { place?: Place }) => {
+      if (result.place) handlePlaceAdded(result.place);
+      else loadPlaces({ fit: true });
     },
-    [sessionId]
+    [handlePlaceAdded, loadPlaces]
+  );
+
+  const handleFocusPlace = useCallback((id: string) => {
+    setFocusedPlaceId(id);
+    setActiveTab("map");
+  }, []);
+
+  const handleClearFocus = useCallback(() => setFocusedPlaceId(null), []);
+
+  const handleMapSelectPlace = useCallback(
+    (p: SharedPlace) => handleToggleSelect(p.id),
+    [handleToggleSelect]
   );
 
   const selectedPlaces = useMemo(
@@ -134,7 +181,7 @@ export default function Home() {
       <header className="flex-shrink-0 bg-white border-b border-gray-200 shadow-sm">
         <div className="flex items-center gap-3 px-4 h-14">
           <span className="text-2xl">🗺️</span>
-          <h1 className="text-lg font-bold text-gray-900">MapShare</h1>
+          <h1 className="text-lg font-bold text-gray-900">cocodake</h1>
           <span className="hidden sm:block text-xs text-gray-400">
             Googleマップのリストをエリア切り取りしてシェア
           </span>
@@ -243,14 +290,11 @@ export default function Home() {
                 onClearSelection={handleClearSelection}
                 onHover={setHighlightedId}
                 onDelete={handleDelete}
-                onFocusPlace={(id) => { setFocusedPlaceId(id); setActiveTab("map"); }}
+                onFocusPlace={handleFocusPlace}
                 filterToVisible={filterToVisible}
               />
             ) : (
-              <ImportPanel
-                sessionId={sessionId}
-                onImportComplete={() => loadPlaces(sessionId)}
-              />
+              <ImportPanel onImportComplete={handleImportComplete} />
             )}
           </div>
 
@@ -304,15 +348,15 @@ export default function Home() {
             <MapView
               places={places}
               selectedIds={selectedIds}
-              onSelectPlace={(p) => handleToggleSelect(p.id)}
+              onSelectPlace={handleMapSelectPlace}
               selectionMode={selectionMode}
               onBoundingBoxChange={handleBoundingBoxChange}
               onVisiblePlacesChange={setVisibleIds}
               highlightedId={highlightedId}
-              sessionId={sessionId}
-              onPlaceAdded={() => loadPlaces(sessionId)}
+              onPlaceAdded={handlePlaceAdded}
               focusedPlaceId={focusedPlaceId}
-              onClearFocus={() => setFocusedPlaceId(null)}
+              onClearFocus={handleClearFocus}
+              fitVersion={fitVersion}
             />
           )}
         </main>
@@ -329,16 +373,13 @@ export default function Home() {
               onClearSelection={handleClearSelection}
               onHover={setHighlightedId}
               onDelete={handleDelete}
-              onFocusPlace={(id) => { setFocusedPlaceId(id); setActiveTab("map"); }}
+              onFocusPlace={handleFocusPlace}
             />
           </div>
         )}
         {activeTab === "import" && (
           <div className="sm:hidden flex-1 bg-white overflow-y-auto">
-            <ImportPanel
-              sessionId={sessionId}
-              onImportComplete={() => loadPlaces(sessionId)}
-            />
+            <ImportPanel onImportComplete={handleImportComplete} />
           </div>
         )}
       </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { Place } from "@/types";
 
 interface PlacesListProps {
@@ -16,7 +16,7 @@ interface PlacesListProps {
   filterToVisible?: boolean;
 }
 
-export default function PlacesList({
+function PlacesList({
   places,
   selectedIds,
   visibleIds,
@@ -31,23 +31,27 @@ export default function PlacesList({
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<"name" | "rating" | "recent">("recent");
 
-  const displayPlaces = places
-    .filter((p) => {
+  // Sorted once per change of places / sort key (dates parsed once, not inside the comparator)
+  const sorted = useMemo(() => {
+    if (sortBy === "name") return [...places].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    if (sortBy === "rating") return [...places].sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    const time = new Map(places.map((p) => [p.id, Date.parse(p.created_at) || 0]));
+    return [...places].sort((a, b) => time.get(b.id)! - time.get(a.id)!);
+  }, [places, sortBy]);
+
+  const displayPlaces = useMemo(() => {
+    const q = search.toLowerCase();
+    return sorted.filter((p) => {
       if (filterToVisible && visibleIds && !visibleIds.has(p.id)) return false;
-      if (!search) return true;
-      const q = search.toLowerCase();
+      if (!q) return true;
       return (
         p.name?.toLowerCase().includes(q) ||
         p.category?.toLowerCase().includes(q) ||
         p.address?.toLowerCase().includes(q) ||
         p.note?.toLowerCase().includes(q)
       );
-    })
-    .sort((a, b) => {
-      if (sortBy === "name") return (a.name || "").localeCompare(b.name || "");
-      if (sortBy === "rating") return (b.rating || 0) - (a.rating || 0);
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
     });
+  }, [sorted, search, filterToVisible, visibleIds]);
 
   return (
     <div className="flex flex-col h-full">
@@ -109,10 +113,10 @@ export default function PlacesList({
               key={place.id}
               place={place}
               isSelected={selectedIds.has(place.id)}
-              onToggle={() => onToggleSelect(place.id)}
+              onToggle={onToggleSelect}
               onHover={onHover}
-              onDelete={() => onDelete(place.id)}
-              onFocus={() => onFocusPlace?.(place.id)}
+              onDelete={onDelete}
+              onFocus={onFocusPlace}
             />
           ))
         )}
@@ -121,7 +125,11 @@ export default function PlacesList({
   );
 }
 
-function PlaceRow({
+export default memo(PlacesList);
+
+// Rows only re-render when their own place or selection changes: the callbacks take the
+// place ID, so the parent passes the same functions to every row.
+const PlaceRow = memo(function PlaceRow({
   place,
   isSelected,
   onToggle,
@@ -131,10 +139,10 @@ function PlaceRow({
 }: {
   place: Place;
   isSelected: boolean;
-  onToggle: () => void;
+  onToggle: (id: string) => void;
   onHover: (id: string | null) => void;
-  onDelete: () => void;
-  onFocus: () => void;
+  onDelete: (id: string) => void;
+  onFocus?: (id: string) => void;
 }) {
   const [showDelete, setShowDelete] = useState(false);
 
@@ -143,7 +151,9 @@ function PlaceRow({
       className={`flex items-start gap-3 px-3 py-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer group transition-colors ${
         isSelected ? "bg-blue-50 hover:bg-blue-50" : ""
       }`}
-      onClick={onFocus}
+      // rows outside the scroll view are not laid out or painted
+      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 76px" }}
+      onClick={() => onFocus?.(place.id)}
       onMouseEnter={() => {
         onHover(place.id);
         setShowDelete(true);
@@ -160,7 +170,7 @@ function PlaceRow({
             ? "bg-blue-500 border-blue-500"
             : "border-gray-300"
         }`}
-        onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        onClick={(e) => { e.stopPropagation(); onToggle(place.id); }}
       >
         {isSelected && (
           <svg
@@ -181,9 +191,14 @@ function PlaceRow({
 
       {/* Photo */}
       {place.photo_url ? (
+        // eslint-disable-next-line @next/next/no-img-element -- photos come from our /api/photo redirect
         <img
           src={place.photo_url}
           alt={place.name || ""}
+          loading="lazy"
+          decoding="async"
+          width={48}
+          height={48}
           className="w-12 h-12 rounded-lg object-cover flex-shrink-0"
         />
       ) : (
@@ -226,7 +241,7 @@ function PlaceRow({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onDelete();
+            onDelete(place.id);
           }}
           className="flex-shrink-0 p-1 text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
           title="削除"
@@ -242,4 +257,4 @@ function PlaceRow({
       )}
     </div>
   );
-}
+});
