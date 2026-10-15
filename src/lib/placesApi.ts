@@ -1,4 +1,6 @@
-// Google Places API (New) integration
+// Google Places API (legacy web service) integration.
+// Photo URLs point at our /api/photo proxy, so the API key never leaves the server.
+import { isValidPhotoRef, photoProxyUrl } from "./photo";
 
 const PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
 
@@ -20,7 +22,7 @@ export async function geocodeAddress(address: string): Promise<{ lat: number; ln
     const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
     url.searchParams.set("address", address);
     url.searchParams.set("key", PLACES_API_KEY);
-    const res = await fetch(url.toString());
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
     const data = await res.json();
     const location = data.results?.[0]?.geometry?.location;
@@ -31,7 +33,54 @@ export async function geocodeAddress(address: string): Promise<{ lat: number; ln
   }
 }
 
-// 座標 + 名前で Find Place → place_id → Details
+// Find Place from Text with every field we store, so one request gives the details
+// (before: Find Place for the ID, then a second Place Details request).
+const FIND_FIELDS = "place_id,name,formatted_address,types,rating,photos,geometry";
+const DETAIL_FIELDS = "name,formatted_address,types,rating,photos,geometry";
+
+interface GooglePlace {
+  place_id?: string;
+  name?: string;
+  formatted_address?: string;
+  types?: string[];
+  rating?: number;
+  photos?: { photo_reference?: string }[];
+  geometry?: { location?: { lat?: number; lng?: number } };
+}
+
+function toPlacesResult(result: GooglePlace, placeId: string): PlacesResult {
+  const ref = result.photos?.[0]?.photo_reference;
+  return {
+    name: result.name || null,
+    address: result.formatted_address || null,
+    category: humanizeCategory(result.types),
+    rating: result.rating || null,
+    photo_url: isValidPhotoRef(ref) ? photoProxyUrl(ref) : null,
+    place_id: placeId,
+    lat: result.geometry?.location?.lat ?? null,
+    lng: result.geometry?.location?.lng ?? null,
+  };
+}
+
+async function findPlace(input: string, bias?: { lat: number; lng: number; radius: number }): Promise<PlacesResult | null> {
+  if (!PLACES_API_KEY) return null;
+  const url = new URL("https://maps.googleapis.com/maps/api/place/findplacefromtext/json");
+  url.searchParams.set("input", input);
+  url.searchParams.set("inputtype", "textquery");
+  url.searchParams.set("fields", FIND_FIELDS);
+  url.searchParams.set("language", "ja");
+  if (bias) url.searchParams.set("locationbias", `circle:${bias.radius}@${bias.lat},${bias.lng}`);
+  url.searchParams.set("key", PLACES_API_KEY);
+
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const candidate: GooglePlace | undefined = data.candidates?.[0];
+  if (!candidate?.place_id) return null;
+  return toPlacesResult(candidate, candidate.place_id);
+}
+
+// 座標 + 名前で Find Place
 export async function enrichPlaceByCoords(
   lat: number,
   lng: number,
@@ -44,68 +93,39 @@ export async function enrichPlaceByCoords(
   if (!name) return null; // 名前なしでは精度が出ないので諦める
 
   try {
-    // Find Place from Text: 名前 + 座標バイアスで place_id を取得
-    const url = new URL(
-      "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
-    );
-    url.searchParams.set("input", name);
-    url.searchParams.set("inputtype", "textquery");
-    url.searchParams.set("locationbias", `circle:100@${lat},${lng}`);
-    url.searchParams.set("fields", "place_id,name");
-    url.searchParams.set("language", "ja");
-    url.searchParams.set("key", PLACES_API_KEY);
-
-    const res = await fetch(url.toString());
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const candidate = data.candidates?.[0];
-    if (!candidate?.place_id) return null;
-
-    return await enrichPlaceById(candidate.place_id);
+    // 名前 + 座標バイアスで検索
+    return await findPlace(name, { lat, lng, radius: 100 });
   } catch (err) {
     console.error("Places API error:", err);
     return null;
   }
 }
 
-// Places API (New) — Place Details by Place ID
+// Place Details by Place ID
 export async function enrichPlaceById(
   placeId: string
 ): Promise<PlacesResult | null> {
   if (!PLACES_API_KEY) return null;
 
   try {
-    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,types,rating,photos,geometry&language=ja&key=${PLACES_API_KEY}`;
-    const res = await fetch(url);
+    const url = new URL("https://maps.googleapis.com/maps/api/place/details/json");
+    url.searchParams.set("place_id", placeId);
+    url.searchParams.set("fields", DETAIL_FIELDS);
+    url.searchParams.set("language", "ja");
+    url.searchParams.set("key", PLACES_API_KEY);
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
 
     const data = await res.json();
-    const result = data.result;
-    if (!result) return null;
-
-    let photo_url: string | null = null;
-    if (result.photos?.[0]?.photo_reference) {
-      photo_url = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${result.photos[0].photo_reference}&key=${PLACES_API_KEY}`;
-    }
-
-    return {
-      name: result.name || null,
-      address: result.formatted_address || null,
-      category: humanizeCategory(result.types),
-      rating: result.rating || null,
-      photo_url,
-      place_id: placeId,
-      lat: result.geometry?.location?.lat ?? null,
-      lng: result.geometry?.location?.lng ?? null,
-    };
+    if (!data.result) return null;
+    return toPlacesResult(data.result, placeId);
   } catch (err) {
     console.error("Places API error:", err);
     return null;
   }
 }
 
-// 名前（+ オプションで座標）で Find Place → Details（食べログ等URLから追加する際に使用）
+// 名前（+ オプションで座標）で Find Place（食べログ等URLやインポートから追加する際に使用）
 export async function enrichPlaceByName(
   name: string,
   lat?: number | null,
@@ -113,23 +133,7 @@ export async function enrichPlaceByName(
 ): Promise<PlacesResult | null> {
   if (!PLACES_API_KEY) return null;
   try {
-    const url = new URL("https://maps.googleapis.com/maps/api/place/findplacefromtext/json");
-    url.searchParams.set("input", name);
-    url.searchParams.set("inputtype", "textquery");
-    url.searchParams.set("fields", "place_id,name");
-    url.searchParams.set("language", "ja");
-    if (lat != null && lng != null) {
-      url.searchParams.set("locationbias", `circle:300@${lat},${lng}`);
-    }
-    url.searchParams.set("key", PLACES_API_KEY);
-
-    const res = await fetch(url.toString());
-    if (!res.ok) return null;
-    const data = await res.json();
-    const candidate = data.candidates?.[0];
-    if (!candidate?.place_id) return null;
-
-    return await enrichPlaceById(candidate.place_id);
+    return await findPlace(name, lat != null && lng != null ? { lat, lng, radius: 300 } : undefined);
   } catch (err) {
     console.error("enrichPlaceByName error:", err);
     return null;
@@ -249,7 +253,7 @@ const GENERIC_TYPES = new Set([
   "lodging",
 ]);
 
-function humanizeCategory(types?: string[]): string | null {
+export function humanizeCategory(types?: string[]): string | null {
   if (!types?.length) return null;
 
   // パス1: 具体的なタイプを優先（汎用タグをスキップ）

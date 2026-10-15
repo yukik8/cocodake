@@ -1,7 +1,6 @@
 import { Metadata } from "next";
-import { createServerClient } from "@/lib/supabase";
+import { getSharedList } from "@/lib/sharedList";
 import SharedMapClient from "./SharedMapClient";
-import type { SharedList } from "@/types";
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -9,35 +8,23 @@ interface Props {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
-  const supabase = createServerClient();
-  const { data } = await supabase
-    .from("shared_lists")
-    .select("title, places_snapshot")
-    .eq("id", id)
-    .single();
+  const result = await getSharedList(id);
+  const share = result.status === "ok" ? result.share : null;
 
-  const title = data?.title || "共有スポットリスト";
-  const count = Array.isArray(data?.places_snapshot)
-    ? data.places_snapshot.length
-    : 0;
+  const title = share?.title || "共有スポットリスト";
+  const count = share?.places_snapshot.length ?? 0;
 
   return {
-    title: `${title} - MapShare`,
+    title: `${title} - cocodake`,
     description: `${count}件のスポットが共有されています`,
   };
 }
 
 export default async function SharePage({ params }: Props) {
   const { id } = await params;
-  const supabase = createServerClient();
+  const result = await getSharedList(id);
 
-  const { data, error } = await supabase
-    .from("shared_lists")
-    .select("*")
-    .eq("id", id)
-    .single();
-
-  if (error || !data) {
+  if (result.status === "not_found") {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
         <div className="text-center px-8">
@@ -53,7 +40,7 @@ export default async function SharePage({ params }: Props) {
     );
   }
 
-  if (data.expires_at && new Date(data.expires_at) < new Date()) {
+  if (result.status === "expired") {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
         <div className="text-center px-8">
@@ -69,5 +56,5 @@ export default async function SharePage({ params }: Props) {
     );
   }
 
-  return <SharedMapClient share={data as SharedList} />;
+  return <SharedMapClient share={result.share} />;
 }

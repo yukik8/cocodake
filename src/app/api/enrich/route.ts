@@ -1,88 +1,68 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
+import { getVerifiedUserId, unauthorized } from "@/lib/auth";
+import { readJson, serverError } from "@/lib/http";
 import { enrichPlaceByCoords, enrichPlaceById } from "@/lib/placesApi";
 import { extractPlaceIdFromUrl } from "@/lib/parseTakeout";
+import { mapWithConcurrency } from "@/lib/pool";
 
-// Batch enrich unenriched places for a session
+export const maxDuration = 120;
+
+// Batch enrich the signed-in user's unenriched places, a few at a time
+// (before: one place at a time with a fixed pause after each).
 export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const { session, limit = 20 } = body as {
-      session: string;
-      limit?: number;
-    };
+  const userId = await getVerifiedUserId();
+  if (!userId) return unauthorized();
 
-    if (!session) {
-      return NextResponse.json({ error: "session required" }, { status: 400 });
-    }
+  try {
+    const body = await readJson(req);
+    const requested = typeof body?.limit === "number" ? Math.floor(body.limit) : 20;
+    const limit = Math.min(Math.max(requested, 1), 50);
 
     const supabase = createServerClient();
 
     // Fetch unenriched places
     const { data: places, error: fetchError } = await supabase
       .from("places")
-      .select("id, lat, lng, url, name")
-      .eq("user_session", session)
+      .select("id, lat, lng, url, name, place_id")
+      .eq("user_session", userId)
       .eq("enriched", false)
       .limit(limit);
 
-    if (fetchError) {
-      return NextResponse.json({ error: fetchError.message }, { status: 500 });
-    }
-
+    if (fetchError) return serverError("enrich fetch", fetchError);
     if (!places || places.length === 0) {
       return NextResponse.json({ enriched: 0 });
     }
 
-    let enrichedCount = 0;
-
-    for (const place of places) {
+    const outcomes = await mapWithConcurrency(places, 5, async (place) => {
       try {
-        let result = null;
+        const placeId = place.place_id || (place.url ? extractPlaceIdFromUrl(place.url) : null);
+        const searchableName = place.name && place.name !== "名称不明" ? place.name : null;
+        const result =
+          (placeId ? await enrichPlaceById(placeId) : null) ??
+          (await enrichPlaceByCoords(place.lat, place.lng, searchableName));
 
-        if (place.url) {
-          const placeId = extractPlaceIdFromUrl(place.url);
-          if (placeId) {
-            result = await enrichPlaceById(placeId);
-          }
-        }
-
-        if (!result) {
-          result = await enrichPlaceByCoords(place.lat, place.lng, place.name);
-        }
-
-        if (result) {
-          await supabase
-            .from("places")
-            .update({
+        // Marked as enriched even without a result, so it isn't retried forever
+        const update = result
+          ? {
               name: result.name || place.name,
               address: result.address,
               category: result.category,
               rating: result.rating,
               photo_url: result.photo_url,
               enriched: true,
-            })
-            .eq("id", place.id);
-
-          enrichedCount++;
-        } else {
-          // Mark as enriched even if no result (avoid retrying forever)
-          await supabase
-            .from("places")
-            .update({ enriched: true })
-            .eq("id", place.id);
-        }
-
-        // Rate limiting: 10 req/s max for Places API
-        await new Promise((r) => setTimeout(r, 120));
+            }
+          : { enriched: true };
+        const { error } = await supabase.from("places").update(update).eq("id", place.id).eq("user_session", userId);
+        return !error && !!result;
       } catch (err) {
         console.error(`Enrich failed for place ${place.id}:`, err);
+        return false;
       }
-    }
+    });
 
-    return NextResponse.json({ enriched: enrichedCount, total: places.length });
+    return NextResponse.json({ enriched: outcomes.filter(Boolean).length, total: places.length });
   } catch (err) {
-    console.error("Enrich error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return serverError("Enrich error:", err);
   }
 }

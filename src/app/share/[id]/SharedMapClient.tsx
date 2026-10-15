@@ -1,26 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import dynamic from "next/dynamic";
-import type { SharedList, Place } from "@/types";
+import type { SharedList, SharedPlace } from "@/types";
 
 const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
+
+// One stable empty selection (a new Set on every render made the map redraw its markers)
+const NO_SELECTION: ReadonlySet<string> = new Set();
 
 interface Props {
   share: SharedList;
 }
 
 export default function SharedMapClient({ share }: Props) {
-  const places = share.places_snapshot as Place[];
+  const places = share.places_snapshot;
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [focusedPlaceId, setFocusedPlaceId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"map" | "list">("map");
   const [copied, setCopied] = useState(false);
 
-  const handleFocusPlace = (id: string) => {
+  const handleFocusPlace = useCallback((id: string) => {
     setFocusedPlaceId(id);
     setActiveTab("map");
-  };
+  }, []);
+  const handleMapSelect = useCallback((place: SharedPlace) => setFocusedPlaceId(place.id), []);
+  const handleClearFocus = useCallback(() => setFocusedPlaceId(null), []);
 
   const handleCopyUrl = async () => {
     await navigator.clipboard.writeText(window.location.href);
@@ -109,12 +114,12 @@ export default function SharedMapClient({ share }: Props) {
         <main className={`flex-1 ${activeTab !== "map" ? "hidden sm:block" : ""}`}>
           <MapView
             places={places}
-            selectedIds={new Set()}
-            onSelectPlace={(place) => setFocusedPlaceId(place.id)}
+            selectedIds={NO_SELECTION}
+            onSelectPlace={handleMapSelect}
             selectionMode={false}
             highlightedId={highlightedId}
             focusedPlaceId={focusedPlaceId}
-            onClearFocus={() => setFocusedPlaceId(null)}
+            onClearFocus={handleClearFocus}
             readOnly
           />
         </main>
@@ -144,7 +149,7 @@ function SharedPlaceRow({
   onHover,
   onFocus,
 }: {
-  place: Place;
+  place: SharedPlace;
   isHighlighted: boolean;
   onHover: (id: string | null) => void;
   onFocus: (id: string) => void;
@@ -159,9 +164,12 @@ function SharedPlaceRow({
       onClick={() => onFocus(place.id)}
     >
       {place.photo_url ? (
+        // eslint-disable-next-line @next/next/no-img-element -- photos come from our /api/photo redirect
         <img
           src={place.photo_url}
           alt={place.name || ""}
+          loading="lazy"
+          decoding="async"
           className="w-13 h-13 rounded-xl object-cover flex-shrink-0"
           style={{ width: 52, height: 52 }}
         />

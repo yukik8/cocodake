@@ -39,7 +39,8 @@ When deciding where to go with friends, you could share your entire saved list �
 ### 1. Create a Supabase project
 
 1. Create an account at [supabase.com](https://supabase.com) and start a new project
-2. Open **SQL Editor** and run `supabase/schema.sql`
+2. Open **SQL Editor** and run `supabase/schema.sql`, then `supabase/rls.sql`
+   (an existing project: run the files in `supabase/migrations/` in order instead)
 3. Go to **Settings → API** and copy:
    - `Project URL` → `NEXT_PUBLIC_SUPABASE_URL`
    - `anon` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
@@ -57,7 +58,7 @@ cp .env.local.example .env.local
 Used for auto-fetching place metadata. Core features work without it.
 
 1. Enable Places API in [Google Cloud Console](https://console.cloud.google.com)
-2. Set the key as `GOOGLE_PLACES_API_KEY`
+2. Set the key as `GOOGLE_PLACES_API_KEY` (server-side only — restrict it to the Places and Geocoding APIs)
 
 ### 4. (Optional) MapTiler
 
@@ -74,6 +75,23 @@ npm run dev
 ```
 
 → http://localhost:3000
+
+### Checks
+
+```bash
+npm run lint && npm run typecheck && npm test
+```
+
+CI (GitHub Actions) runs the same checks and a production build on every pull request.
+
+---
+
+## Security model
+
+- Every API route that reads or changes a user's data identifies the user from the Supabase JWT (the session cookie on the web, `Authorization: Bearer` from the native app) — never from a user ID in the request.
+- Share links store a snapshot of public fields only (no owner ID, no notes) and are read by the server alone; the anon key cannot list them.
+- Place photos go through `/api/photo`, so the Google API key never reaches the browser or the database.
+- URLs pasted by users are only fetched on Google Maps / Tabelog hosts, redirect by redirect (no SSRF), and place names are rendered as text, never as HTML.
 
 ---
 
@@ -124,7 +142,8 @@ cocodakeはその問題を解決する。
 ### 1. Supabaseプロジェクトを作成
 
 1. [supabase.com](https://supabase.com) でアカウント作成 → 新規プロジェクト作成
-2. **SQL Editor** を開いて `supabase/schema.sql` の内容を実行
+2. **SQL Editor** を開いて `supabase/schema.sql`、続けて `supabase/rls.sql` を実行
+   （既存のプロジェクトでは、代わりに `supabase/migrations/` のファイルを順に実行）
 3. **Settings → API** から以下を取得:
    - `Project URL` → `NEXT_PUBLIC_SUPABASE_URL`
    - `anon` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
@@ -142,7 +161,7 @@ cp .env.local.example .env.local
 店名・写真・評価の自動取得に使用。未設定でも基本機能は動作します。
 
 1. [Google Cloud Console](https://console.cloud.google.com) → Places API を有効化
-2. APIキーを取得 → `GOOGLE_PLACES_API_KEY` に設定
+2. APIキーを取得 → `GOOGLE_PLACES_API_KEY` に設定（サーバー側だけで使う。Places API と Geocoding API に制限する）
 
 ### 4. （オプション）MapTiler
 
@@ -159,6 +178,23 @@ npm run dev
 ```
 
 → http://localhost:3000
+
+### チェック
+
+```bash
+npm run lint && npm run typecheck && npm test
+```
+
+CI（GitHub Actions）が、プルリクエストごとに同じチェックと本番ビルドを行う。
+
+---
+
+## セキュリティ
+
+- ユーザーのデータを読み書きする API は、すべて Supabase の JWT（Web はセッション Cookie、アプリは `Authorization: Bearer`）からユーザーを判定する。リクエストに書かれたユーザーIDは使わない
+- 共有リンクには公開してよい項目だけ（持ち主のID・メモは含めない）を保存し、読めるのはサーバーだけ。anon キーでは一覧できない
+- 写真は `/api/photo` を通すので、Google の API キーはブラウザにも DB にも出ない
+- 貼り付けられた URL は、Google マップと食べログのホストだけを、リダイレクトごとに確かめて取りに行く（SSRF 対策）。店名は HTML ではなくテキストとして表示する
 
 ---
 

@@ -9,7 +9,7 @@ export default function LoginScreen() {
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 px-4">
       <div className="bg-white rounded-2xl shadow-lg p-10 w-full max-w-sm text-center">
         <div className="text-5xl mb-4">🗺️</div>
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">MapShare</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">cocodake</h1>
         <p className="text-sm text-gray-500 mb-8">
           Googleマップのリストをエリア切り取りしてシェア
         </p>

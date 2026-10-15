@@ -1,4 +1,5 @@
 import { Place } from "@/types";
+import { fetchAllowed, isTabelogHost } from "./safeFetch";
 
 // Google Takeout "Saved Places" JSON format
 interface TakeoutFeature {
@@ -58,7 +59,38 @@ const JP_HEADER_MAP: Record<string, string> = {
 };
 
 function normalizeHeaders(headers: string[]): string[] {
-  return headers.map((h) => JP_HEADER_MAP[h] ?? h);
+  return headers.map((h) => {
+    const t = h.replace(/^﻿/, "").trim();
+    return JP_HEADER_MAP[t] ?? t;
+  });
+}
+
+// Takeout writes [0, 0] for places it has no coordinates for. Those are kept without
+// coordinates (the import geocodes them by name / place ID) instead of being dropped.
+function validCoords(lat: unknown, lng: unknown): { lat: number; lng: number } | null {
+  if (typeof lat !== "number" || typeof lng !== "number") return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
+function pushTakeoutPlace(
+  results: Partial<Place>[],
+  p: { name: string | undefined; url: string | null; coords: { lat: number; lng: number } | null; address: string | null; note: string | null }
+) {
+  const name = p.name || "名称不明";
+  // without coordinates, a row is only useful if it can be geocoded
+  if (!p.coords && name === "名称不明" && !(p.url && extractPlaceIdFromUrl(p.url))) return;
+  results.push({
+    name,
+    url: p.url,
+    lat: p.coords?.lat,
+    lng: p.coords?.lng,
+    address: p.address,
+    note: p.note,
+    enriched: false,
+  });
 }
 
 export function parseTakeoutJson(raw: unknown): Partial<Place>[] {
@@ -68,38 +100,26 @@ export function parseTakeoutJson(raw: unknown): Partial<Place>[] {
   if (
     raw &&
     typeof raw === "object" &&
-    (raw as TakeoutGeoJSON).type === "FeatureCollection"
+    (raw as TakeoutGeoJSON).type === "FeatureCollection" &&
+    Array.isArray((raw as TakeoutGeoJSON).features)
   ) {
     const fc = raw as TakeoutGeoJSON;
     for (const feature of fc.features) {
-      const props = feature.properties;
-      let lat: number | undefined;
-      let lng: number | undefined;
+      const props = feature?.properties ?? {};
+      const geo = props.Location?.["Geo Coordinates"] ?? props.location?.["Geo Coordinates"];
+      const coords =
+        validCoords(feature?.geometry?.coordinates?.[1], feature?.geometry?.coordinates?.[0]) ??
+        validCoords(geo?.Latitude, geo?.Longitude);
 
-      if (feature.geometry?.coordinates) {
-        [lng, lat] = feature.geometry.coordinates;
-      } else if (props.Location?.["Geo Coordinates"]) {
-        lat = props.Location["Geo Coordinates"].Latitude;
-        lng = props.Location["Geo Coordinates"].Longitude;
-      } else if (props.location?.["Geo Coordinates"]) {
-        lat = props.location["Geo Coordinates"].Latitude;
-        lng = props.location["Geo Coordinates"].Longitude;
-      }
-
-      if (!lat || !lng) continue;
-
-      results.push({
+      pushTakeoutPlace(results, {
         name:
           props.location?.name ||           // 新フォーマット
           props.Location?.["Business Name"] || // 旧フォーマット
-          props.Title ||
-          "名称不明",
+          props.Title,
         url: props.google_maps_url || props["Google Maps URL"] || null,
-        lat,
-        lng,
+        coords,
         address: props.location?.address || props.Location?.Address || null,
         note: props.Note || null,
-        enriched: false,
       });
     }
     return results;
@@ -108,31 +128,17 @@ export function parseTakeoutJson(raw: unknown): Partial<Place>[] {
   // Handle array of items (some Takeout formats)
   if (Array.isArray(raw)) {
     for (const item of raw) {
-      const lat =
-        item.geometry?.coordinates?.[1] ??
-        item.Location?.["Geo Coordinates"]?.Latitude;
-      const lng =
-        item.geometry?.coordinates?.[0] ??
-        item.Location?.["Geo Coordinates"]?.Longitude;
+      if (!item || typeof item !== "object") continue;
+      const coords =
+        validCoords(item.geometry?.coordinates?.[1], item.geometry?.coordinates?.[0]) ??
+        validCoords(item.Location?.["Geo Coordinates"]?.Latitude, item.Location?.["Geo Coordinates"]?.Longitude);
 
-      if (!lat || !lng) continue;
-
-      results.push({
-        name:
-          item.properties?.Location?.["Business Name"] ||
-          item.properties?.Title ||
-          item.name ||
-          "名称不明",
-        url:
-          item.properties?.["Google Maps URL"] || item.url || null,
-        lat,
-        lng,
-        address:
-          item.properties?.Location?.Address ||
-          item.address ||
-          null,
+      pushTakeoutPlace(results, {
+        name: item.properties?.Location?.["Business Name"] || item.properties?.Title || item.name,
+        url: item.properties?.["Google Maps URL"] || item.url || null,
+        coords,
+        address: item.properties?.Location?.Address || item.address || null,
         note: item.properties?.Note || null,
-        enriched: false,
       });
     }
     return results;
@@ -142,18 +148,17 @@ export function parseTakeoutJson(raw: unknown): Partial<Place>[] {
 }
 
 export function parseTakeoutCsv(csv: string): Partial<Place>[] {
-  const lines = csv.trim().split("\n");
-  if (lines.length < 2) return [];
+  const rows = parseCsv(csv);
+  if (rows.length < 2) return [];
 
-  const rawHeaders = lines[0].split(",").map((h) => h.trim().replace(/"/g, ""));
-  const headers = normalizeHeaders(rawHeaders);
+  const headers = normalizeHeaders(rows[0]);
   const results: Partial<Place>[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i]);
+  for (let i = 1; i < rows.length; i++) {
+    const values = rows[i];
     const row: Record<string, string> = {};
     headers.forEach((h, idx) => {
-      row[h] = (values[idx] || "").trim().replace(/"/g, "");
+      row[h] = (values[idx] || "").trim();
     });
 
     const csvRow = row as TakeoutCsvRow;
@@ -177,24 +182,46 @@ export function parseTakeoutCsv(csv: string): Partial<Place>[] {
   return results;
 }
 
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let current = "";
+// RFC 4180: quoted fields may contain commas, "" (an escaped quote) and line breaks.
+// (Splitting on "\n" first broke any row whose note spans several lines.)
+export function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
   let inQuotes = false;
+  const s = text.replace(/^﻿/, "");
 
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === "," && !inQuotes) {
-      result.push(current);
-      current = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && s[i + 1] === "\n") i++;
+      row.push(field);
+      field = "";
+      if (row.some((v) => v !== "")) rows.push(row);
+      row = [];
     } else {
-      current += char;
+      field += c;
     }
   }
-  result.push(current);
-  return result;
+  row.push(field);
+  if (row.some((v) => v !== "")) rows.push(row);
+  return rows;
 }
 
 export function extractCoordsFromUrl(
@@ -202,7 +229,14 @@ export function extractCoordsFromUrl(
 ): { lat: number; lng: number } | null {
   if (!url) return null;
 
-  // Pattern: @lat,lng or !3dlat!4dlng
+  // Pattern: !3d{lat}!4d{lng} — the place itself. Checked before @lat,lng, which is the
+  // viewport centre and can be far from the pin.
+  const d3Match = url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+  if (d3Match) {
+    return { lat: parseFloat(d3Match[1]), lng: parseFloat(d3Match[2]) };
+  }
+
+  // Pattern: @lat,lng
   const atMatch = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
   if (atMatch) {
     return { lat: parseFloat(atMatch[1]), lng: parseFloat(atMatch[2]) };
@@ -212,12 +246,6 @@ export function extractCoordsFromUrl(
   const llMatch = url.match(/[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/);
   if (llMatch) {
     return { lat: parseFloat(llMatch[1]), lng: parseFloat(llMatch[2]) };
-  }
-
-  // Pattern: !3d{lat}!4d{lng}
-  const d3Match = url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
-  if (d3Match) {
-    return { lat: parseFloat(d3Match[1]), lng: parseFloat(d3Match[2]) };
   }
 
   // Pattern: query=lat,lng
@@ -238,19 +266,25 @@ export function extractCoordsFromUrl(
   return null;
 }
 
+// Google place IDs (ChIJ…) from query_place_id=, place_id=, place_id: and !1s… URL forms.
+// Feature IDs such as !1s0x6018…:0x1234 are not place IDs and give null.
+// The native app and the iOS share extension use the same rules (and the same test cases).
 export function extractPlaceIdFromUrl(url: string): string | null {
-  // query_place_id= (Google Takeout CSV形式)
-  const m0 = url.match(/query_place_id=(ChIJ[^&/\s]+)/);
-  if (m0) return m0[1];
-  const m1 = url.match(/place_id=(ChIJ[^&/\s]+)/);
+  if (!url) return null;
+  const m1 = url.match(/place_id[=:](ChIJ[A-Za-z0-9_-]+)/);
   if (m1) return m1[1];
-  const m2 = url.match(/!1s(ChIJ[^!]+)/);
+  const m2 = url.match(/!1s(ChIJ[A-Za-z0-9_-]+)/);
   if (m2) return m2[1];
   return null;
 }
 
 export function isTabelogUrl(url: string): boolean {
-  return /tabelog\.com\/.+\/\d{8}/.test(url);
+  try {
+    const u = new URL(url);
+    return (u.protocol === "https:" || u.protocol === "http:") && isTabelogHost(u) && /\/\d{8}(\/|$)/.test(u.pathname);
+  } catch {
+    return false;
+  }
 }
 
 export interface TabelogInfo {
@@ -262,57 +296,68 @@ export interface TabelogInfo {
 
 // 食べログページを取得して店名・座標を抽出
 export async function fetchTabelogInfo(url: string): Promise<TabelogInfo> {
-  const result: TabelogInfo = { name: null, address: null, lat: null, lng: null };
+  const empty: TabelogInfo = { name: null, address: null, lat: null, lng: null };
+  if (!isTabelogUrl(url)) return empty;
 
   try {
-    const res = await fetch(url, {
+    const result = await fetchAllowed(url.replace(/^http:/, "https:"), isTabelogHost, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "ja,en;q=0.9",
         "Accept": "text/html,application/xhtml+xml",
       },
-      signal: AbortSignal.timeout(8000),
+      timeoutMs: 8000,
     });
-    if (!res.ok) return result;
+    if (!result?.response.ok) return empty;
+    return parseTabelogHtml(await result.response.text());
+  } catch {
+    return empty; // fetch失敗
+  }
+}
 
-    const html = await res.text();
+const decodeEntities = (s: string) =>
+  s.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
 
-    // 1. JSON-LD（最も信頼できる — 座標・店名・住所がある）
-    const jsonLdMatches = html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
-    for (const match of jsonLdMatches) {
-      try {
-        const data = JSON.parse(match[1]);
-        const entries = Array.isArray(data) ? data : [data];
-        for (const entry of entries) {
-          if (entry["@type"] === "Restaurant" || entry["@type"] === "FoodEstablishment") {
-            result.name = entry.name || null;
-            result.lat = entry.geo?.latitude ? parseFloat(entry.geo.latitude) : null;
-            result.lng = entry.geo?.longitude ? parseFloat(entry.geo.longitude) : null;
-            const addr = entry.address;
-            if (addr) {
-              result.address = [addr.addressRegion, addr.addressLocality, addr.streetAddress]
-                .filter(Boolean).join("");
-            }
-            if (result.name) return result; // 取れたら確定
+export function parseTabelogHtml(html: string): TabelogInfo {
+  const result: TabelogInfo = { name: null, address: null, lat: null, lng: null };
+
+  // 1. JSON-LD（最も信頼できる — 座標・店名・住所がある）
+  const jsonLdMatches = html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+  for (const match of jsonLdMatches) {
+    try {
+      const data = JSON.parse(match[1]);
+      const entries = Array.isArray(data) ? data : [data];
+      for (const entry of entries) {
+        if (entry["@type"] === "Restaurant" || entry["@type"] === "FoodEstablishment") {
+          result.name = typeof entry.name === "string" ? entry.name : null;
+          const lat = parseFloat(entry.geo?.latitude);
+          const lng = parseFloat(entry.geo?.longitude);
+          result.lat = Number.isFinite(lat) ? lat : null;
+          result.lng = Number.isFinite(lng) ? lng : null;
+          const addr = entry.address;
+          if (addr) {
+            result.address = [addr.addressRegion, addr.addressLocality, addr.streetAddress]
+              .filter(Boolean).join("");
           }
+          if (result.name) return result; // 取れたら確定
         }
-      } catch { /* ignore parse errors */ }
-    }
-
-    // 2. og:title フォールバック（例: "店名 (最寄り駅 / エリア)"）
-    const ogTitle = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i)?.[1];
-    if (ogTitle) {
-      result.name = ogTitle.replace(/\s*[\(（][^)）]*[\)）].*$/, "").trim().replace(/\s*-\s*食べログ.*$/, "").trim() || null;
-    }
-
-    // 3. title タグフォールバック
-    if (!result.name) {
-      const titleTag = html.match(/<title>([^<]+)<\/title>/i)?.[1];
-      if (titleTag) {
-        result.name = titleTag.replace(/\s*[\(（][^)）]*[\)）].*$/, "").trim().replace(/\s*[-|]\s*食べログ.*$/, "").trim() || null;
       }
+    } catch { /* ignore parse errors */ }
+  }
+
+  // 2. og:title フォールバック（例: "店名 (最寄り駅 / エリア)"）
+  const ogTitle = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i)?.[1];
+  if (ogTitle) {
+    result.name = decodeEntities(ogTitle).replace(/\s*[\(（][^)）]*[\)）].*$/, "").trim().replace(/\s*-\s*食べログ.*$/, "").trim() || null;
+  }
+
+  // 3. title タグフォールバック
+  if (!result.name) {
+    const titleTag = html.match(/<title>([^<]+)<\/title>/i)?.[1];
+    if (titleTag) {
+      result.name = decodeEntities(titleTag).replace(/\s*[\(（][^)）]*[\)）].*$/, "").trim().replace(/\s*[-|]\s*食べログ.*$/, "").trim() || null;
     }
-  } catch { /* fetch失敗 */ }
+  }
 
   return result;
 }
@@ -327,7 +372,7 @@ export function extractPlaceNameFromUrl(url: string): string | null {
     }
     // ?q=店名+住所 形式（座標でない場合）
     const q = u.searchParams.get("q");
-    if (q && !/^-?\d+\.\d+,-?\d+\.\d+$/.test(q.trim())) {
+    if (q && !/^-?\d+\.\d+,-?\d+\.\d+$/.test(q.trim()) && !q.startsWith("place_id:")) {
       return q;
     }
   } catch {

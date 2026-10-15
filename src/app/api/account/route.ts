@@ -1,35 +1,31 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
+import { getVerifiedUserId, unauthorized } from "@/lib/auth";
 
-export async function DELETE(req: NextRequest) {
-  const { session } = await req.json() as { session?: string };
-  if (!session) {
-    return NextResponse.json({ error: "session is required" }, { status: 400 });
-  }
+// Deletes the signed-in user's account and data. The user comes from the verified JWT —
+// never from the request body (before, any UUID in the body deleted that account).
+export async function DELETE() {
+  const userId = await getVerifiedUserId();
+  if (!userId) return unauthorized();
 
   const supabase = createServerClient();
 
-  const { error: placesError } = await supabase
-    .from("places")
-    .delete()
-    .eq("user_session", session);
-
-  if (placesError) {
-    return NextResponse.json({ error: placesError.message }, { status: 500 });
+  const { error: sharesError } = await supabase.from("shared_lists").delete().eq("user_session", userId);
+  if (sharesError) {
+    console.error("account delete: shares", sharesError);
+    return NextResponse.json({ error: "共有リストの削除に失敗しました" }, { status: 500 });
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const authRes = await fetch(`${supabaseUrl}/auth/v1/admin/users/${session}`, {
-    method: "DELETE",
-    headers: {
-      Authorization: `Bearer ${serviceRoleKey}`,
-      apikey: serviceRoleKey,
-    },
-  });
-  if (!authRes.ok) {
-    const body = await authRes.json().catch(() => ({}));
-    return NextResponse.json({ error: body.message ?? "auth deletion failed" }, { status: 500 });
+  const { error: placesError } = await supabase.from("places").delete().eq("user_session", userId);
+  if (placesError) {
+    console.error("account delete: places", placesError);
+    return NextResponse.json({ error: "スポットの削除に失敗しました" }, { status: 500 });
+  }
+
+  const { error: authError } = await supabase.auth.admin.deleteUser(userId);
+  if (authError) {
+    console.error("account delete: auth user", authError);
+    return NextResponse.json({ error: "アカウントの削除に失敗しました" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });
