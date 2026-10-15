@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServerClient } from "@/lib/supabase";
+import { getVerifiedUserId, unauthorized } from "@/lib/auth";
 import { parseTakeoutJson, parseTakeoutCsv } from "@/lib/parseTakeout";
 import { enrichPlaceByName, enrichPlaceById } from "@/lib/placesApi";
-import { extractPlaceIdFromUrl } from "@/lib/parseTakeout";
+import { mapWithConcurrency } from "@/lib/pool";
+import { planImport, seenKeysFrom, toImportRow, type ExistingRow, type ImportCandidate, type ImportRow } from "@/lib/importPlan";
 import { Place } from "@/types";
 
 export const maxDuration = 300;
+
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+// Google calls in flight at once (was 5 per batch plus a fixed 120 ms pause between batches)
+const GEOCODE_CONCURRENCY = 10;
+// Rows are saved chunk by chunk, so a timeout keeps what was already geocoded
+const GEOCODE_CHUNK = 50;
 
 type ProgressEvent =
   | { type: "progress"; phase: "geocoding"; current: number; total: number }
@@ -13,9 +22,49 @@ type ProgressEvent =
   | { type: "done"; imported: number; parsed: number; geocodeFailed: number; duplicates: number }
   | { type: "error"; message: string };
 
+async function loadExistingKeys(supabase: SupabaseClient, userId: string) {
+  const PAGE = 1000;
+  const rows: ExistingRow[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from("places")
+      .select("place_id, url, source_url")
+      .eq("user_session", userId)
+      .order("id")
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    rows.push(...(data ?? []));
+    if (!data || data.length < PAGE) break;
+  }
+  return seenKeysFrom(rows);
+}
+
+// ON CONFLICT DO NOTHING on (user_session, place_id): a place saved meanwhile is skipped,
+// not a failed batch. Returns how many rows were actually inserted.
+async function saveRows(supabase: SupabaseClient, userId: string, rows: ImportRow[]): Promise<number> {
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += 500) {
+    const batch = rows.slice(i, i + 500).map((r) => ({ user_session: userId, ...r }));
+    const { data, error } = await supabase
+      .from("places")
+      .upsert(batch, { onConflict: "user_session,place_id", ignoreDuplicates: true })
+      .select("id");
+    if (error) throw error;
+    inserted += data?.length ?? 0;
+  }
+  return inserted;
+}
+
+async function geocode(c: ImportCandidate) {
+  if (!c.urlPlaceId && c.name === "名称不明") return null;
+  // URL に place_id があれば Details、なければ Find Place（どちらも1回）
+  const result = c.urlPlaceId ? await enrichPlaceById(c.urlPlaceId) : await enrichPlaceByName(c.name);
+  return result?.lat != null && result?.lng != null ? result : null;
+}
+
 async function runImport(
   file: File,
-  sessionId: string,
+  userId: string,
   onProgress: (event: ProgressEvent) => void
 ): Promise<void> {
   onProgress({ type: "progress", phase: "parsing" });
@@ -46,114 +95,66 @@ async function runImport(
     return;
   }
 
-  const withCoords = parsed.filter((p) => p.lat != null && p.lng != null);
-  const withoutCoords = parsed.filter((p) => p.lat == null || p.lng == null);
-  const geocoded: typeof parsed = [...withCoords];
-
-  const CONCURRENCY = 5;
-  let geocodeDone = 0;
-  for (let i = 0; i < withoutCoords.length; i += CONCURRENCY) {
-    const batch = withoutCoords.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(
-      batch.map(async (p) => {
-        if (!p.name || p.name === "名称不明") return null;
-        // URL に place_id があれば Details 1回、なければ Find Place + Details の2回
-        const urlPlaceId = p.url ? extractPlaceIdFromUrl(p.url) : null;
-        const result = urlPlaceId
-          ? await enrichPlaceById(urlPlaceId)
-          : await enrichPlaceByName(p.name);
-        if (result?.lat != null && result?.lng != null) {
-          return {
-            ...p,
-            place_id: result.place_id || null,
-            lat: result.lat,
-            lng: result.lng,
-            address: p.address || result.address || null,
-            category: p.category || result.category || null,
-            rating: p.rating || result.rating || null,
-            photo_url: p.photo_url || result.photo_url || null,
-            enriched: true,
-          };
-        }
-        return null;
-      })
-    );
-    results.forEach((r) => { if (r) geocoded.push(r); });
-    geocodeDone += batch.length;
-    onProgress({ type: "progress", phase: "geocoding", current: geocodeDone, total: withoutCoords.length });
-    if (i + CONCURRENCY < withoutCoords.length) {
-      await new Promise((r) => setTimeout(r, 120));
-    }
-  }
+  const supabase = createServerClient();
+  const seen = await loadExistingKeys(supabase, userId);
+  const plan = planImport(parsed, seen);
+  let duplicates = plan.duplicates;
+  let imported = 0;
+  let geocodeFailed = 0;
 
   onProgress({ type: "progress", phase: "saving" });
+  const ready = plan.withCoords.map((c) => toImportRow(c)).filter((r): r is ImportRow => !!r);
+  const readyInserted = await saveRows(supabase, userId, ready);
+  imported += readyInserted;
+  duplicates += ready.length - readyInserted;
 
-  const supabase = createServerClient();
+  const total = plan.withoutCoords.length;
+  for (let i = 0; i < total; i += GEOCODE_CHUNK) {
+    const chunk = plan.withoutCoords.slice(i, i + GEOCODE_CHUNK);
+    const results = await mapWithConcurrency(chunk, GEOCODE_CONCURRENCY, geocode);
 
-  const DEDUP_PAGE = 1000;
-  const allExisting: { place_id: string | null; url: string | null }[] = [];
-  let dedupFrom = 0;
-  while (true) {
-    const { data: page } = await supabase
-      .from("places")
-      .select("place_id, url")
-      .eq("user_session", sessionId)
-      .range(dedupFrom, dedupFrom + DEDUP_PAGE - 1);
-    if (page && page.length > 0) allExisting.push(...page);
-    if (!page || page.length < DEDUP_PAGE) break;
-    dedupFrom += DEDUP_PAGE;
-  }
-  const existingPlaceIds = new Set(allExisting.map((p) => p.place_id).filter(Boolean));
-  const existingUrls = new Set(allExisting.map((p) => p.url).filter(Boolean));
+    const rows: ImportRow[] = [];
+    results.forEach((geo, k) => {
+      if (!geo) {
+        geocodeFailed++;
+        return;
+      }
+      // two different URLs in the file (or an already saved spot) can resolve to the same place
+      if (geo.place_id && seen.placeIds.has(geo.place_id) && geo.place_id !== chunk[k].urlPlaceId) {
+        duplicates++;
+        return;
+      }
+      if (geo.place_id) seen.placeIds.add(geo.place_id);
+      const row = toImportRow(chunk[k], geo);
+      if (row) rows.push(row);
+      else geocodeFailed++;
+    });
 
-  const rows = geocoded
-    .filter((p) => {
-      if (p.place_id && existingPlaceIds.has(p.place_id)) return false;
-      const url = p.url || `https://www.google.com/maps?q=${p.lat!},${p.lng!}`;
-      if (!p.place_id && existingUrls.has(url)) return false;
-      return true;
-    })
-    .map((p) => ({
-      user_session: sessionId,
-      place_id: p.place_id || null,
-      name: p.name || "名称不明",
-      url: p.place_id
-        ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name || "名称不明")}&query_place_id=${p.place_id}`
-        : p.url || `https://www.google.com/maps?q=${p.lat!},${p.lng!}`,
-      lat: p.lat!,
-      lng: p.lng!,
-      address: p.address || null,
-      category: p.category || null,
-      rating: p.rating || null,
-      photo_url: p.photo_url || null,
-      note: p.note || null,
-      enriched: p.enriched ?? false,
-    }));
-
-  const batchSize = 500;
-  let inserted = 0;
-  for (let i = 0; i < rows.length; i += batchSize) {
-    const batch = rows.slice(i, i + batchSize);
-    const { error } = await supabase.from("places").insert(batch);
-    if (error) {
-      onProgress({ type: "error", message: error.message });
-      return;
-    }
-    inserted += batch.length;
+    const inserted = await saveRows(supabase, userId, rows);
+    imported += inserted;
+    duplicates += rows.length - inserted;
+    onProgress({ type: "progress", phase: "geocoding", current: Math.min(i + GEOCODE_CHUNK, total), total });
   }
 
-  const geocodeFailed = withoutCoords.length - (geocoded.length - withCoords.length);
-  const duplicates = geocoded.length - rows.length;
-  onProgress({ type: "done", imported: inserted, parsed: parsed.length, geocodeFailed, duplicates });
+  onProgress({ type: "done", imported, parsed: parsed.length, geocodeFailed, duplicates });
 }
 
 export async function POST(req: NextRequest) {
-  const formData = await req.formData();
-  const file = formData.get("file") as File | null;
-  const sessionId = formData.get("session") as string | null;
+  const userId = await getVerifiedUserId();
+  if (!userId) return unauthorized();
 
-  if (!file || !sessionId) {
-    return NextResponse.json({ error: "file and session are required" }, { status: 400 });
+  let file: File | null = null;
+  try {
+    const value = (await req.formData()).get("file");
+    file = value instanceof File ? value : null;
+  } catch {
+    file = null;
+  }
+  if (!file) {
+    return NextResponse.json({ error: "file is required" }, { status: 400 });
+  }
+  if (file.size > MAX_FILE_BYTES) {
+    return NextResponse.json({ error: "ファイルが大きすぎます（10MBまで）" }, { status: 413 });
   }
 
   // X-Stream: true → SSE（新クライアント）、なし → JSON（旧map-native等）
@@ -167,7 +168,7 @@ export async function POST(req: NextRequest) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
         };
         try {
-          await runImport(file, sessionId, send);
+          await runImport(file, userId, send);
         } catch (err) {
           console.error("Import error:", err);
           send({ type: "error", message: "Internal server error" });
@@ -188,7 +189,7 @@ export async function POST(req: NextRequest) {
   // JSON fallback（旧クライアント向け）
   try {
     let result: { imported?: number; error?: string } = {};
-    await runImport(file, sessionId, (event) => {
+    await runImport(file, userId, (event) => {
       if (event.type === "done") result = { imported: event.imported };
       if (event.type === "error") result = { error: event.message };
     });

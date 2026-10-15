@@ -8,9 +8,6 @@ create policy "users manage own places" on places
   using (user_session = auth.uid()::text)
   with check (user_session = auth.uid()::text);
 
--- shared_lists: 誰でも読める（共有URL）、作成は認証ユーザーのみ
-create policy "anyone can read shared_lists" on shared_lists
-  for select using (true);
-
-create policy "authenticated users can insert shared_lists" on shared_lists
-  for insert with check (auth.role() = 'authenticated');
+-- shared_lists: ポリシーなし。読み書きはサーバー（service role）だけ。
+-- 共有ページはサーバー側で1件ずつ読み、期限も確かめる。以前の「誰でも読める」ポリシーでは、
+-- 公開されている anon キーで全件（期限切れも、持ち主の ID も）一覧できた

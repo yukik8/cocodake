@@ -13,7 +13,9 @@ export function getSupabaseClient() {
   return _browserClient;
 }
 
-// Server-side client with service role key — used in API routes
+// Server-side client with service role key — used in API routes for DB operations.
+// It bypasses RLS, so every query must be scoped to the user from lib/auth.ts.
+// (The cookie/JWT check lives in lib/auth.ts: this file is also imported by client components.)
 export function createServerClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -23,5 +25,5 @@ export function createServerClient() {
         "Copy .env.local.example to .env.local and fill in your credentials."
     );
   }
-  return createClient(url, key);
+  return createClient(url, key, { auth: { persistSession: false } });
 }

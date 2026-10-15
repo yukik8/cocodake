@@ -1,27 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase";
+import { getSharedList } from "@/lib/sharedList";
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const result = await getSharedList(id);
 
-  const supabase = createServerClient();
-  const { data, error } = await supabase
-    .from("shared_lists")
-    .select("*")
-    .eq("id", id)
-    .single();
-
-  if (error || !data) {
+  if (result.status === "not_found") {
     return NextResponse.json({ error: "Share not found" }, { status: 404 });
   }
-
-  // Check expiry
-  if (data.expires_at && new Date(data.expires_at) < new Date()) {
+  if (result.status === "expired") {
     return NextResponse.json({ error: "This share link has expired" }, { status: 410 });
   }
-
-  return NextResponse.json({ share: data });
+  return NextResponse.json({ share: result.share });
 }
