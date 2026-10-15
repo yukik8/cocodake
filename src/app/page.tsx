@@ -15,9 +15,12 @@ const loadMapView = () => import("@/components/MapView");
 const MapView = dynamic(loadMapView, { ssr: false });
 
 type Tab = "map" | "list" | "import";
+// auth: the session is no longer valid (401); failed: network or server error
+type LoadError = "auth" | "failed";
+type LoadResult = { places: Place[] } | { error: LoadError };
 
 export default function Home() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, signOut } = useAuth();
   const sessionId = user?.id ?? "";
 
   const [places, setPlaces] = useState<Place[]>([]);
@@ -31,6 +34,7 @@ export default function Home() {
   const [showShare, setShowShare] = useState(false);
   const [filterToVisible, setFilterToVisible] = useState(false);
   const [fitVersion, setFitVersion] = useState(0);
+  const [loadError, setLoadError] = useState<LoadError | null>(null);
 
   // The map code (MapLibre, the largest chunk) starts downloading right away, in parallel
   // with the places request — before, it only started once the places had arrived.
@@ -39,32 +43,44 @@ export default function Home() {
   }, []);
 
   // The server identifies the user from the session cookie; no user ID in the URL.
-  const fetchPlaces = useCallback(async (): Promise<Place[] | null> => {
-    const res = await fetch("/api/places");
-    const data = await res.json().catch(() => null);
-    return res.ok && Array.isArray(data?.places) ? data.places : null;
+  // A failed request is reported as an error, never shown as an empty list.
+  const fetchPlaces = useCallback(async (): Promise<LoadResult> => {
+    try {
+      const res = await fetch("/api/places");
+      if (res.status === 401) return { error: "auth" };
+      const data = await res.json().catch(() => null);
+      return res.ok && Array.isArray(data?.places) ? { places: data.places } : { error: "failed" };
+    } catch {
+      return { error: "failed" };
+    }
   }, []);
 
-  // Reload after an import, and fit the map to the new set
+  const applyLoadResult = useCallback((result: LoadResult): boolean => {
+    if ("error" in result) {
+      setLoadError(result.error);
+      return false;
+    }
+    setPlaces(result.places);
+    setLoadError(null);
+    return true;
+  }, []);
+
+  // Reload (after an import, or from the error message); an import also refits the map
   const loadPlaces = useCallback(async (options?: { fit?: boolean }) => {
     setLoading(true);
     try {
-      const next = await fetchPlaces();
-      if (next) {
-        setPlaces(next);
-        if (options?.fit) setFitVersion((v) => v + 1);
-      }
+      if (applyLoadResult(await fetchPlaces()) && options?.fit) setFitVersion((v) => v + 1);
     } finally {
       setLoading(false);
     }
-  }, [fetchPlaces]);
+  }, [fetchPlaces, applyLoadResult]);
 
   useEffect(() => {
     if (!sessionId) return;
     let cancelled = false;
     fetchPlaces()
-      .then((next) => {
-        if (!cancelled && next) setPlaces(next);
+      .then((result) => {
+        if (!cancelled) applyLoadResult(result);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -72,7 +88,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, fetchPlaces]);
+  }, [sessionId, fetchPlaces, applyLoadResult]);
 
   const handleBoundingBoxChange = useCallback(
     (bbox: BoundingBox | null) => {
@@ -224,6 +240,7 @@ export default function Home() {
         {places.length > 0 && (
           <div className="flex items-center gap-4 px-4 py-1.5 bg-gray-50 text-xs text-gray-500 border-t border-gray-100">
             <span>合計 {places.length}件</span>
+            {loadError && <span className="text-red-500">最新の一覧を読み込めませんでした</span>}
             <span>表示中 {visibleIds.size}件</span>
             {selectedIds.size > 0 && (
               <>
@@ -319,7 +336,26 @@ export default function Home() {
         <main
           className={`flex-1 ${activeTab !== "map" ? "hidden sm:block" : ""}`}
         >
-          {loading && places.length === 0 ? (
+          {loadError && places.length === 0 && !loading ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center px-8">
+                <p className="text-lg font-medium text-gray-600 mb-2">
+                  {loadError === "auth" ? "ログインの有効期限が切れました" : "スポットを読み込めませんでした"}
+                </p>
+                <p className="text-sm text-gray-400 mb-4">
+                  {loadError === "auth"
+                    ? "もう一度ログインしてください。保存したスポットは消えていません。"
+                    : "通信状態を確認して、再読み込みしてください。"}
+                </p>
+                <button
+                  onClick={loadError === "auth" ? signOut : () => loadPlaces()}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+                >
+                  {loadError === "auth" ? "再ログイン" : "再読み込み"}
+                </button>
+              </div>
+            </div>
+          ) : loading && places.length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
                 <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
