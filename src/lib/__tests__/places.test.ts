@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cleanRating, cleanText, isGooglePlaceId, isUuid, safeHttpUrl, toClientPlace, toSharedPlace } from "../places";
-import { isValidPhotoRef, photoProxyUrl, toPublicPhotoUrl } from "../photo";
+import { isValidPhotoRef, photoProxyUrl, photoUrlForPlace, toPublicPhotoUrl } from "../photo";
 
 const LEGACY_PHOTO =
   "https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=AbC_def-123456&key=SECRET_KEY";
@@ -56,7 +56,7 @@ describe("toSharedPlace", () => {
       address: null,
       category: "カフェ",
       rating: 4.2,
-      photo_url: "/api/photo?ref=AbC_def-123456",
+      photo_url: "/api/photo?place_id=ChIJabc123", // stored references expire; the place ID doesn't
     });
     expect(JSON.stringify(shared)).not.toContain("SECRET_KEY");
   });
@@ -67,8 +67,26 @@ describe("toSharedPlace", () => {
 });
 
 describe("toClientPlace", () => {
-  it("rewrites the photo URL of rows saved before the fix", () => {
-    expect(toClientPlace({ id: "1", photo_url: LEGACY_PHOTO }).photo_url).toBe("/api/photo?ref=AbC_def-123456");
+  it("shows a saved place's photo by place ID, so an expired stored reference doesn't matter", () => {
+    expect(toClientPlace({ id: "1", place_id: "ChIJabc12345", photo_url: "/api/photo?ref=Expired_ref_123" }).photo_url).toBe(
+      "/api/photo?place_id=ChIJabc12345"
+    );
+  });
+  it("falls back to the reference without a place ID, and never exposes the key", () => {
+    expect(toClientPlace({ id: "1", place_id: null, photo_url: LEGACY_PHOTO }).photo_url).toBe("/api/photo?ref=AbC_def-123456");
+  });
+  it("keeps 'no photo' as null", () => {
+    expect(toClientPlace({ id: "1", place_id: "ChIJabc12345", photo_url: null }).photo_url).toBeNull();
+  });
+});
+
+describe("photoUrlForPlace / toPublicPhotoUrl with place IDs", () => {
+  it("accepts a valid place-ID path and rejects a malformed one", () => {
+    expect(toPublicPhotoUrl("/api/photo?place_id=ChIJabc12345")).toBe("/api/photo?place_id=ChIJabc12345");
+    expect(toPublicPhotoUrl("/api/photo?place_id=x&ref=y")).toBeNull();
+  });
+  it("ignores an invalid place ID", () => {
+    expect(photoUrlForPlace("/api/photo?ref=AbC_def-123456", "not valid!")).toBe("/api/photo?ref=AbC_def-123456");
   });
 });
 

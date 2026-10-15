@@ -246,6 +246,43 @@ describe("GET /api/photo", () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain("key=SECRET_KEY");
   });
 
+  it("looks up a saved place's current photo by place ID (stored references expire)", async () => {
+    process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ status: "OK", result: { photos: [{ photo_reference: "Fresh_ref_ABCDEFG" }] } }))
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://lh3.googleusercontent.com/places/fresh=s400" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { GET } = await import("@/app/api/photo/route");
+
+    const res = await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://lh3.googleusercontent.com/places/fresh=s400");
+    expect(String(fetchMock.mock.calls[0][0])).toContain("place_id=ChIJabc12345");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("photo_reference=Fresh_ref_ABCDEFG");
+  });
+
+  it("answers 404 (cached briefly) for an expired reference or a place without photos", async () => {
+    process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Bad Request", { status: 400 })));
+    const { GET } = await import("@/app/api/photo/route");
+    const expired = await GET(new NextRequest("http://localhost/api/photo?ref=Expired_ref_123"));
+    expect(expired.status).toBe(404);
+    expect(expired.headers.get("cache-control")).toContain("max-age=3600");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ status: "OK", result: {} })));
+    expect((await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"))).status).toBe(404);
+  });
+
+  it("does not cache a failure when Google is unavailable", async () => {
+    process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ status: "OVER_QUERY_LIMIT" })));
+    const { GET } = await import("@/app/api/photo/route");
+    const res = await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"));
+    expect(res.status).toBe(502);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("answers 404 to an invalid reference without calling Google", async () => {
     process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
     const fetchMock = vi.fn();
