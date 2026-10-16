@@ -5,6 +5,8 @@ import { getVerifiedUserId, unauthorized } from "@/lib/auth";
 import { parseTakeoutJson, parseTakeoutCsv } from "@/lib/parseTakeout";
 import { enrichPlaceByName, enrichPlaceById } from "@/lib/placesApi";
 import { mapWithConcurrency } from "@/lib/pool";
+import { refFromPhotoUrl } from "@/lib/photo";
+import { saveRefs } from "@/lib/photoCache";
 import { planImport, seenKeysFrom, toImportRow, type ExistingRow, type ImportCandidate, type ImportRow } from "@/lib/importPlan";
 import { Place } from "@/types";
 
@@ -114,6 +116,7 @@ async function runImport(
     const results = await mapWithConcurrency(chunk, GEOCODE_CONCURRENCY, geocode);
 
     const rows: ImportRow[] = [];
+    const refs: { place_id: string; photo_ref: string }[] = [];
     results.forEach((geo, k) => {
       if (!geo) {
         geocodeFailed++;
@@ -128,9 +131,12 @@ async function runImport(
       const row = toImportRow(chunk[k], geo);
       if (row) rows.push(row);
       else geocodeFailed++;
+      const ref = refFromPhotoUrl(geo.photo_url);
+      if (row && geo.place_id && ref) refs.push({ place_id: geo.place_id, photo_ref: ref });
     });
 
     const inserted = await saveRows(supabase, userId, rows);
+    await saveRefs(supabase, refs);
     imported += inserted;
     duplicates += rows.length - inserted;
     onProgress({ type: "progress", phase: "geocoding", current: Math.min(i + GEOCODE_CHUNK, total), total });

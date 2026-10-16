@@ -65,7 +65,7 @@ describe("toImportRow", () => {
       source_url: FEATURE_URL,
       lat: 35.6,
       lng: 139.7,
-      photo_url: "/api/photo?ref=Ref_ABCDEFGHIJ",
+      photo_url: "/api/photo?place_id=ChIJnew00003", // the reference itself goes to place_photos
       note: "memo",
       enriched: true,
     });

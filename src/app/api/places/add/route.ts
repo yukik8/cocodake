@@ -21,7 +21,8 @@ import {
   safeHttpUrl,
   toClientPlace,
 } from "@/lib/places";
-import { toPublicPhotoUrl } from "@/lib/photo";
+import { placePhotoUrl, refFromPhotoUrl, toPublicPhotoUrl } from "@/lib/photo";
+import { saveRefs } from "@/lib/photoCache";
 import { distanceMeters } from "@/lib/geo";
 import type { Place } from "@/types";
 
@@ -94,8 +95,13 @@ function alreadyExists() {
 type NewPlace = Omit<Place, "id" | "note" | "created_at">;
 
 // place_id があればそれで重複チェック、なければURL一致。同時に2回押されても
-// DB のユニーク制約（user_session, place_id）が2件目を弾く
-async function insertPlace(supabase: SupabaseClient, userId: string, row: NewPlace) {
+// DB のユニーク制約（user_session, place_id）が2件目を弾く。
+// 写真は場所の ID で表示し（写真の ID は期限切れになる）、手元の新しい写真の ID を
+// place_photos に入れておく（最初の表示でも Google の呼び出しが1回で済む）
+async function insertPlace(supabase: SupabaseClient, userId: string, input: NewPlace) {
+  const freshRef = input.place_id ? refFromPhotoUrl(input.photo_url) : null;
+  const row = input.place_id && input.photo_url ? { ...input, photo_url: placePhotoUrl(input.place_id) } : input;
+
   const dupQuery = row.place_id
     ? supabase.from("places").select("id").eq("user_session", userId).eq("place_id", row.place_id)
     : supabase.from("places").select("id").eq("user_session", userId).eq("url", row.url ?? "");
@@ -109,6 +115,7 @@ async function insertPlace(supabase: SupabaseClient, userId: string, row: NewPla
     .single();
   if (error?.code === "23505") return alreadyExists();
   if (error || !data) return serverError("places insert", error);
+  if (row.place_id && freshRef) await saveRefs(supabase, [{ place_id: row.place_id, photo_ref: freshRef }]);
   return NextResponse.json({ place: toClientPlace(data as unknown as Place) });
 }
 

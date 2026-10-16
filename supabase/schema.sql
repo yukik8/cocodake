@@ -16,7 +16,7 @@ create table if not exists places (
   address text,
   category text,
   rating double precision,
-  photo_url text,                       -- /api/photo?ref=… (never a URL holding the API key)
+  photo_url text,                       -- /api/photo?place_id=… (or ?ref=… without a place ID); never the API key
   note text,
   enriched boolean default false,
   created_at timestamptz default now(),
@@ -28,6 +28,7 @@ create index if not exists places_user_created_idx on places(user_session, creat
 create index if not exists places_geom_idx on places using gist(geom);
 -- one row per Google place per user (rows without place_id are not affected: NULLs are distinct)
 create unique index if not exists places_user_place_id_key on places(user_session, place_id);
+create index if not exists places_place_id_idx on places(place_id) where place_id is not null;
 
 -- Shared lists table: snapshot of places for a share URL
 create table if not exists shared_lists (
@@ -41,3 +42,11 @@ create table if not exists shared_lists (
 );
 
 create index if not exists shared_lists_user_session_idx on shared_lists(user_session);
+
+-- Current Google photo reference per Google place, shared by all users; refreshed by
+-- /api/photo when a reference expires. photo_ref = null: the place has no photo.
+create table if not exists place_photos (
+  place_id text primary key,
+  photo_ref text,
+  fetched_at timestamptz not null default now()
+);
