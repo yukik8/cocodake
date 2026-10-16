@@ -1,13 +1,15 @@
 import type { SharedPlace } from "@/types";
-import { toPublicPhotoUrl } from "./photo";
+import { photoUrlForPlace } from "./photo";
+
+export { isGooglePlaceId, isUuid } from "./ids";
 
 // Columns sent to the owner's apps. user_session and the PostGIS geom column stay in the DB
 // (geom alone added ~50 bytes of hex per row to every list response).
 export const PLACE_COLUMNS =
   "id, place_id, name, url, lat, lng, address, category, rating, photo_url, note, enriched, created_at";
 
-export function toClientPlace<T extends { photo_url: string | null }>(row: T): T {
-  return { ...row, photo_url: toPublicPhotoUrl(row.photo_url) };
+export function toClientPlace<T extends { photo_url: string | null; place_id?: string | null }>(row: T): T {
+  return { ...row, photo_url: photoUrlForPlace(row.photo_url, row.place_id) };
 }
 
 // What a share link exposes: no owner id and no private note. Also applied when reading
@@ -25,7 +27,7 @@ export function toSharedPlace(row: Record<string, unknown>): SharedPlace {
     address: str(row.address),
     category: str(row.category),
     rating: num(row.rating),
-    photo_url: toPublicPhotoUrl(str(row.photo_url)),
+    photo_url: photoUrlForPlace(str(row.photo_url), str(row.place_id)),
   };
 }
 
@@ -48,16 +50,8 @@ export function cleanText(value: unknown, max: number): string | null {
   return t ? t.slice(0, max) : null;
 }
 
-export function isGooglePlaceId(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9_-]{10,300}$/.test(value);
-}
-
 export function cleanRating(value: unknown): number | null {
   return typeof value === "number" && value >= 0 && value <= 5 ? value : null;
-}
-
-export function isUuid(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 export function googleMapsPlaceUrl(name: string, placeId: string): string {
