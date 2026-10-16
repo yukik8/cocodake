@@ -4,13 +4,15 @@ import { isGooglePlaceId } from "@/lib/ids";
 
 // Public on purpose: share pages show photos to people who aren't signed in.
 // The key is added here, on the server; Google answers with a redirect to the image
-// itself (a URL without the key), which browsers and the CDN then cache for a day.
+// itself (a URL without the key), which browsers and the CDN then cache for a day. After
+// that the CDN keeps answering from cache while it refreshes in the background, so only
+// the very first view of a photo waits for Google.
 //
 //   ?place_id=…  a saved place: looks up the place's current photo first, because stored
 //                photo references expire
 //   ?ref=…       a fresh reference (search / tap previews)
 
-const CACHE_OK = "public, max-age=86400, s-maxage=86400";
+const CACHE_OK = "public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800";
 const CACHE_MISSING = "public, max-age=3600, s-maxage=3600"; // no photo, or an expired reference
 const NO_STORE = "no-store"; // Google unavailable: try again next time
 
