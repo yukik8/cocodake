@@ -5,6 +5,8 @@ import { readJson, serverError } from "@/lib/http";
 import { enrichPlaceByCoords, enrichPlaceById } from "@/lib/placesApi";
 import { extractPlaceIdFromUrl } from "@/lib/parseTakeout";
 import { mapWithConcurrency } from "@/lib/pool";
+import { placePhotoUrl, refFromPhotoUrl } from "@/lib/photo";
+import { saveRefs } from "@/lib/photoCache";
 
 export const maxDuration = 120;
 
@@ -49,11 +51,16 @@ export async function POST(req: NextRequest) {
               address: result.address,
               category: result.category,
               rating: result.rating,
-              photo_url: result.photo_url,
+              // shown by place ID; the fresh reference goes to place_photos below
+              photo_url: result.photo_url && result.place_id ? placePhotoUrl(result.place_id) : result.photo_url,
               enriched: true,
             }
           : { enriched: true };
         const { error } = await supabase.from("places").update(update).eq("id", place.id).eq("user_session", userId);
+        const freshRef = refFromPhotoUrl(result?.photo_url);
+        if (!error && result?.place_id && freshRef) {
+          await saveRefs(supabase, [{ place_id: result.place_id, photo_ref: freshRef }]);
+        }
         return !error && !!result;
       } catch (err) {
         console.error(`Enrich failed for place ${place.id}:`, err);

@@ -42,6 +42,16 @@ export function toPublicPhotoUrl(value: string | null | undefined): string | nul
   return null;
 }
 
+export function placePhotoUrl(placeId: string): string {
+  return `${PLACE_PREFIX}${placeId}`;
+}
+
+// The reference inside a /api/photo?ref=… path (e.g. from a preview), or null
+export function refFromPhotoUrl(value: string | null | undefined): string | null {
+  const ref = value?.startsWith(REF_PREFIX) ? value.slice(REF_PREFIX.length) : null;
+  return isValidPhotoRef(ref) ? ref : null;
+}
+
 // The photo URL to show for a saved place
 export function photoUrlForPlace(stored: string | null | undefined, placeId: string | null | undefined): string | null {
   if (!stored) return null;

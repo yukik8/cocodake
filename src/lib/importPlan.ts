@@ -1,7 +1,7 @@
 import type { Place } from "@/types";
 import { extractPlaceIdFromUrl } from "./parseTakeout";
 import { googleMapsPlaceUrl, safeHttpUrl } from "./places";
-import { toPublicPhotoUrl } from "./photo";
+import { photoUrlForPlace, toPublicPhotoUrl } from "./photo";
 
 // Pure planning for a Takeout import, kept apart from the route so it can be tested:
 // duplicates (already saved, or repeated in the file) are dropped BEFORE any Google call.
@@ -110,7 +110,7 @@ export function toImportRow(c: ImportCandidate, geo?: GeocodeResult | null): Imp
     address: c.address || geo?.address || null,
     category: geo?.category ?? null,
     rating: geo?.rating ?? null,
-    photo_url: toPublicPhotoUrl(geo?.photo_url),
+    photo_url: photoUrlForPlace(toPublicPhotoUrl(geo?.photo_url), placeId),
     note: c.note,
     enriched: !!geo,
   };

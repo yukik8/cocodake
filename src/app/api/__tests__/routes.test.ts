@@ -209,7 +209,11 @@ describe("POST /api/places/add (from a search result)", () => {
     expect(res.status).toBe(200);
     const insert = db.queries.find((q) => q.ops.some(([op]) => op === "insert"))!;
     const row = insert.ops.find(([op]) => op === "insert")![1][0] as Record<string, unknown>;
-    expect(row).toMatchObject({ user_session: USER, place_id: "ChIJabc12345", name: "Cafe", photo_url: "/api/photo?ref=AbC_def-123456" });
+    // shown by place ID; the reference the client sent is kept in place_photos
+    expect(row).toMatchObject({ user_session: USER, place_id: "ChIJabc12345", name: "Cafe", photo_url: "/api/photo?place_id=ChIJabc12345" });
+    const cached = db.queries.find((q) => q.table === "place_photos")!;
+    expect(db.has(cached, "upsert")).toBe(true);
+    expect(JSON.stringify(cached.ops)).toContain("AbC_def-123456");
   });
 
   it("turns a unique-index violation (two saves at once) into 409", async () => {
@@ -231,11 +235,18 @@ describe("POST /api/places/add (from a search result)", () => {
 });
 
 describe("GET /api/photo", () => {
-  it("redirects to Google's image URL without exposing the key", async () => {
+  const photo302 = (where: string) => new Response(null, { status: 302, headers: { location: `https://lh3.googleusercontent.com/places/${where}` } });
+  const details = (ref?: string) => Response.json({ status: "OK", result: ref ? { photos: [{ photo_reference: ref }] } : {} });
+  const now = () => new Date().toISOString();
+  const upserts = (db: ReturnType<typeof fakeSupabase>) =>
+    db.queries.filter((q) => q.table === "place_photos").flatMap((q) => q.ops.filter(([op]) => op === "upsert").map(([, a]) => a[0]));
+
+  beforeEach(() => {
     process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(null, { status: 302, headers: { location: "https://lh3.googleusercontent.com/places/abc=s400" } })
-    );
+  });
+
+  it("?ref= redirects to Google's image URL without exposing the key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(photo302("abc=s400"));
     vi.stubGlobal("fetch", fetchMock);
     const { GET } = await import("@/app/api/photo/route");
 
@@ -246,36 +257,78 @@ describe("GET /api/photo", () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain("key=SECRET_KEY");
   });
 
-  it("looks up a saved place's current photo by place ID (stored references expire)", async () => {
-    process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(Response.json({ status: "OK", result: { photos: [{ photo_reference: "Fresh_ref_ABCDEFG" }] } }))
-      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://lh3.googleusercontent.com/places/fresh=s400" } }));
+  it("?ref= answers 404 (cached briefly) for an expired reference", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Bad Request", { status: 400 })));
+    const { GET } = await import("@/app/api/photo/route");
+    const res = await GET(new NextRequest("http://localhost/api/photo?ref=Expired_ref_123"));
+    expect(res.status).toBe(404);
+    expect(res.headers.get("cache-control")).toContain("max-age=3600");
+  });
+
+  it("uses the stored reference: one Google call, no Place Details lookup", async () => {
+    fakeSupabase((q) => (q.table === "place_photos" ? { data: { photo_ref: "Stored_ref_ABCDEFG", fetched_at: now() } } : {}));
+    const fetchMock = vi.fn().mockResolvedValue(photo302("stored=s400"));
     vi.stubGlobal("fetch", fetchMock);
     const { GET } = await import("@/app/api/photo/route");
 
     const res = await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"));
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("https://lh3.googleusercontent.com/places/fresh=s400");
-    expect(String(fetchMock.mock.calls[0][0])).toContain("place_id=ChIJabc12345");
-    expect(String(fetchMock.mock.calls[1][0])).toContain("photo_reference=Fresh_ref_ABCDEFG");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("photo_reference=Stored_ref_ABCDEFG");
   });
 
-  it("answers 404 (cached briefly) for an expired reference or a place without photos", async () => {
-    process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Bad Request", { status: 400 })));
+  it("when the stored reference has expired, fetches the current one, stores it and shows it", async () => {
+    const db = fakeSupabase((q) => (q.table === "place_photos" ? { data: { photo_ref: "Expired_ref_123", fetched_at: now() } } : {}));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("Bad Request", { status: 400 }))
+      .mockResolvedValueOnce(details("Fresh_ref_ABCDEFG"))
+      .mockResolvedValueOnce(photo302("fresh=s400"));
+    vi.stubGlobal("fetch", fetchMock);
     const { GET } = await import("@/app/api/photo/route");
-    const expired = await GET(new NextRequest("http://localhost/api/photo?ref=Expired_ref_123"));
-    expect(expired.status).toBe(404);
-    expect(expired.headers.get("cache-control")).toContain("max-age=3600");
 
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ status: "OK", result: {} })));
+    const res = await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"));
+    expect(res.headers.get("location")).toBe("https://lh3.googleusercontent.com/places/fresh=s400");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("place_id=ChIJabc12345");
+    expect(upserts(db)).toEqual([[expect.objectContaining({ place_id: "ChIJabc12345", photo_ref: "Fresh_ref_ABCDEFG" })]]);
+  });
+
+  it("with nothing stored, looks up a saved place's photo and stores the reference", async () => {
+    const db = fakeSupabase((q) => (q.table === "places" ? { data: { id: P1 } } : {}));
+    const fetchMock = vi.fn().mockResolvedValueOnce(details("Fresh_ref_ABCDEFG")).mockResolvedValueOnce(photo302("fresh=s400"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { GET } = await import("@/app/api/photo/route");
+
+    expect((await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"))).status).toBe(302);
+    expect(upserts(db)).toHaveLength(1);
+  });
+
+  it("never asks Google about a place nobody saved", async () => {
+    fakeSupabase();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { GET } = await import("@/app/api/photo/route");
+
+    expect((await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJnotSaved123"))).status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("records a place without photos, and answers 404 without asking Google again for a week", async () => {
+    const db = fakeSupabase((q) => (q.table === "places" ? { data: { id: P1 } } : {}));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(details()));
+    const { GET } = await import("@/app/api/photo/route");
     expect((await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"))).status).toBe(404);
+    expect(upserts(db)).toEqual([[expect.objectContaining({ place_id: "ChIJabc12345", photo_ref: null })]]);
+
+    fakeSupabase((q) => (q.table === "place_photos" ? { data: { photo_ref: null, fetched_at: now() } } : {}));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect((await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"))).status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does not cache a failure when Google is unavailable", async () => {
-    process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
+    fakeSupabase((q) => (q.table === "places" ? { data: { id: P1 } } : {}));
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ status: "OVER_QUERY_LIMIT" })));
     const { GET } = await import("@/app/api/photo/route");
     const res = await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"));
@@ -283,12 +336,19 @@ describe("GET /api/photo", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
 
-  it("answers 404 to an invalid reference without calling Google", async () => {
-    process.env.GOOGLE_PLACES_API_KEY = "SECRET_KEY";
+  it("still works before the migration (no place_photos table yet)", async () => {
+    fakeSupabase((q) => (q.table === "place_photos" ? { error: { code: "PGRST205" } } : { data: { id: P1 } }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(details("Fresh_ref_ABCDEFG")).mockResolvedValueOnce(photo302("fresh=s400")));
+    const { GET } = await import("@/app/api/photo/route");
+    expect((await GET(new NextRequest("http://localhost/api/photo?place_id=ChIJabc12345"))).status).toBe(302);
+  });
+
+  it("answers 404 to an invalid reference or place ID without calling Google", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { GET } = await import("@/app/api/photo/route");
     expect((await GET(new NextRequest("http://localhost/api/photo?ref=../../etc"))).status).toBe(404);
+    expect((await GET(new NextRequest("http://localhost/api/photo?place_id=../x"))).status).toBe(404);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

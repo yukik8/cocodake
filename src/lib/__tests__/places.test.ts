@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cleanRating, cleanText, isGooglePlaceId, isUuid, safeHttpUrl, toClientPlace, toSharedPlace } from "../places";
-import { isValidPhotoRef, photoProxyUrl, photoUrlForPlace, toPublicPhotoUrl } from "../photo";
+import { isValidPhotoRef, photoProxyUrl, photoUrlForPlace, refFromPhotoUrl, toPublicPhotoUrl } from "../photo";
 
 const LEGACY_PHOTO =
   "https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=AbC_def-123456&key=SECRET_KEY";
@@ -112,5 +112,14 @@ describe("input cleaning", () => {
     expect(cleanRating(4.5)).toBe(4.5);
     expect(cleanRating(6)).toBeNull();
     expect(cleanRating("4")).toBeNull();
+  });
+});
+
+describe("refFromPhotoUrl", () => {
+  it("reads the reference from a preview photo path only", () => {
+    expect(refFromPhotoUrl("/api/photo?ref=AbC_def-123456")).toBe("AbC_def-123456");
+    expect(refFromPhotoUrl("/api/photo?place_id=ChIJabc12345")).toBeNull();
+    expect(refFromPhotoUrl(LEGACY_PHOTO)).toBeNull();
+    expect(refFromPhotoUrl(null)).toBeNull();
   });
 });
