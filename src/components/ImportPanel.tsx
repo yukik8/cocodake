@@ -3,7 +3,7 @@
 import { useState, useCallback } from "react";
 import { useDropzone } from "react-dropzone";
 import type { Place } from "@/types";
-import { importResultMessage } from "@/lib/importResult";
+import { importResultMessage, notFoundPlaces } from "@/lib/importResult";
 
 interface ImportPanelProps {
   // place: the single spot added from a URL; absent after a file import (reload the list)
@@ -18,7 +18,11 @@ export default function ImportPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // "info" when nothing new was added (every place a duplicate, etc.): neither success green nor error red
-  const [success, setSuccess] = useState<{ text: string; tone: "success" | "info" } | null>(null);
+  const [success, setSuccess] = useState<{
+    text: string;
+    tone: "success" | "info";
+    notFound?: ReturnType<typeof notFoundPlaces>;
+  } | null>(null);
   const [progressMsg, setProgressMsg] = useState<string | null>(null);
 
   // File upload
@@ -66,7 +70,11 @@ export default function ImportPanel({
               else if (event.phase === "saving") setProgressMsg("データを保存中...");
             } else if (event.type === "done") {
               setProgressMsg(null);
-              setSuccess({ text: importResultMessage(event), tone: event.imported > 0 ? "success" : "info" });
+              setSuccess({
+                text: importResultMessage(event),
+                tone: event.imported > 0 ? "success" : "info",
+                notFound: notFoundPlaces(event),
+              });
               onImportComplete({});
               fetch("/api/enrich", {
                 method: "POST",
@@ -257,6 +265,28 @@ export default function ImportPanel({
           }`}
         >
           {success.text}
+        </div>
+      )}
+      {success?.notFound && success.notFound.places.length > 0 && (
+        <div className="p-3 border border-gray-200 rounded-lg text-sm text-gray-700">
+          <p className="font-medium">見つからなかったスポット</p>
+          <p className="mt-1 text-xs text-gray-500">
+            Googleマップで開いて「共有」からリンクをコピーし、「URL直接追加」に貼ると追加できることがあります
+          </p>
+          <ul className="mt-2 space-y-1">
+            {success.notFound.places.map((p, i) => (
+              <li key={i}>
+                {p.url ? (
+                  <a href={p.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
+                    {p.name}
+                  </a>
+                ) : (
+                  p.name
+                )}
+              </li>
+            ))}
+          </ul>
+          {success.notFound.more > 0 && <p className="mt-1 text-xs text-gray-500">ほか {success.notFound.more}件</p>}
         </div>
       )}
     </div>

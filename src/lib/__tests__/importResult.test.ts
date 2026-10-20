@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { importResultMessage } from "../importResult";
+import { importResultMessage, notFoundPlaces } from "../importResult";
 
 describe("importResultMessage", () => {
   it("shows how many of the file's places were added and why the rest were skipped", () => {
@@ -26,5 +26,29 @@ describe("importResultMessage", () => {
 
   it("falls back to the added count when only that is sent", () => {
     expect(importResultMessage({ imported: 12 })).toBe("12件を新規追加しました");
+  });
+});
+
+describe("notFoundPlaces", () => {
+  it("lists the places not found with their links, and counts the rest beyond the list", () => {
+    const done = {
+      imported: 1,
+      geocodeFailed: 3,
+      notFound: [
+        { name: "Munich", url: "https://www.google.com/maps/place/Munich/data=!4m2!3m1!1s0x1:0x2" },
+        { name: "Castle District", url: null },
+      ],
+    };
+    expect(notFoundPlaces(done)).toEqual({ places: done.notFound, more: 1 });
+  });
+
+  it("drops links that are not http(s)", () => {
+    expect(notFoundPlaces({ imported: 0, geocodeFailed: 1, notFound: [{ name: "x", url: "javascript:alert(1)" }] }).places).toEqual([
+      { name: "x", url: null },
+    ]);
+  });
+
+  it("is empty for an older server that sends no list", () => {
+    expect(notFoundPlaces({ imported: 3, geocodeFailed: 2 })).toEqual({ places: [], more: 2 });
   });
 });
