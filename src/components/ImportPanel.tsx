@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { useDropzone } from "react-dropzone";
 import type { Place } from "@/types";
+import { importResultMessage } from "@/lib/importResult";
 
 interface ImportPanelProps {
   // place: the single spot added from a URL; absent after a file import (reload the list)
@@ -64,11 +65,7 @@ export default function ImportPanel({
               else if (event.phase === "saving") setProgressMsg("データを保存中...");
             } else if (event.type === "done") {
               setProgressMsg(null);
-              const details: string[] = [];
-              if (event.duplicates > 0) details.push(`重複 ${event.duplicates}件スキップ`);
-              if (event.geocodeFailed > 0) details.push(`座標取得失敗 ${event.geocodeFailed}件`);
-              const suffix = details.length > 0 ? `（${details.join("、")}）` : "";
-              setSuccess(`${event.imported}件を新規追加しました${suffix}`);
+              setSuccess(importResultMessage(event));
               onImportComplete({});
               fetch("/api/enrich", {
                 method: "POST",
