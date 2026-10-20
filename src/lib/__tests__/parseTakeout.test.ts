@@ -39,6 +39,10 @@ describe("extractCoordsFromUrl", () => {
     ["https://maps.google.com/?ll=35.3,139.4", { lat: 35.3, lng: 139.4 }],
     ["https://www.google.com/maps/search/?api=1&query=-33.86,151.21", { lat: -33.86, lng: 151.21 }],
     ["https://www.google.com/maps?q=35.5,139.6", { lat: 35.5, lng: 139.6 }],
+    // a dropped pin in Takeout
+    ["https://www.google.com/maps/search/48.2210833,14.2374444", { lat: 48.2210833, lng: 14.2374444 }],
+    ["https://www.google.com/maps/search/-33.86,+151.21", { lat: -33.86, lng: 151.21 }],
+    ["https://www.google.com/maps/search/ramen", null],
     ["https://www.google.com/maps/place/Shop", null],
     ["", null],
   ])("%s", (url, expected) => {
