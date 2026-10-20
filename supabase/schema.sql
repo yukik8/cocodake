@@ -1,6 +1,7 @@
 -- Schema for a fresh project. An existing project: run supabase/migrations/ in order instead.
 
--- Enable PostGIS extension for spatial queries
+-- Enable PostGIS extension for spatial queries. It goes in the extensions schema: in public,
+-- its spatial_ref_sys table would be exposed through the API without RLS.
 create extension if not exists postgis schema extensions;
 
 -- Places table: stores all imported/added spots
@@ -20,7 +21,8 @@ create table if not exists places (
   note text,
   enriched boolean default false,
   created_at timestamptz default now(),
-  geom geometry(Point, 4326) generated always as (ST_SetSRID(ST_MakePoint(lng, lat), 4326)) stored
+  geom extensions.geometry(Point, 4326)
+    generated always as (extensions.st_setsrid(extensions.st_makepoint(lng, lat), 4326)) stored
 );
 
 create index if not exists places_user_session_idx on places(user_session);
