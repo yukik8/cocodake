@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { useDropzone } from "react-dropzone";
 import type { Place } from "@/types";
+import { importResultMessage } from "@/lib/importResult";
 
 interface ImportPanelProps {
   // place: the single spot added from a URL; absent after a file import (reload the list)
@@ -16,7 +17,8 @@ export default function ImportPanel({
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  // "info" when nothing new was added (every place a duplicate, etc.): neither success green nor error red
+  const [success, setSuccess] = useState<{ text: string; tone: "success" | "info" } | null>(null);
   const [progressMsg, setProgressMsg] = useState<string | null>(null);
 
   // File upload
@@ -64,11 +66,7 @@ export default function ImportPanel({
               else if (event.phase === "saving") setProgressMsg("データを保存中...");
             } else if (event.type === "done") {
               setProgressMsg(null);
-              const details: string[] = [];
-              if (event.duplicates > 0) details.push(`重複 ${event.duplicates}件スキップ`);
-              if (event.geocodeFailed > 0) details.push(`座標取得失敗 ${event.geocodeFailed}件`);
-              const suffix = details.length > 0 ? `（${details.join("、")}）` : "";
-              setSuccess(`${event.imported}件を新規追加しました${suffix}`);
+              setSuccess({ text: importResultMessage(event), tone: event.imported > 0 ? "success" : "info" });
               onImportComplete({});
               fetch("/api/enrich", {
                 method: "POST",
@@ -122,7 +120,7 @@ export default function ImportPanel({
         return;
       }
 
-      setSuccess(`「${data.place.name}」を追加しました`);
+      setSuccess({ text: `「${data.place.name}」を追加しました`, tone: "success" });
       setUrl("");
       onImportComplete({ place: data.place });
     } catch {
@@ -251,8 +249,14 @@ export default function ImportPanel({
         </div>
       )}
       {success && (
-        <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
-          {success}
+        <div
+          className={`p-3 border rounded-lg text-sm ${
+            success.tone === "success"
+              ? "bg-green-50 border-green-200 text-green-700"
+              : "bg-gray-50 border-gray-200 text-gray-700"
+          }`}
+        >
+          {success.text}
         </div>
       )}
     </div>

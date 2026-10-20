@@ -5,6 +5,7 @@ import { getVerifiedUserId, unauthorized } from "@/lib/auth";
 import { parseTakeoutJson, parseTakeoutCsv } from "@/lib/parseTakeout";
 import { enrichPlaceByName, enrichPlaceById } from "@/lib/placesApi";
 import { mapWithConcurrency } from "@/lib/pool";
+import { createProgressReporter } from "@/lib/progress";
 import { refFromPhotoUrl } from "@/lib/photo";
 import { saveRefs } from "@/lib/photoCache";
 import { planImport, seenKeysFrom, toImportRow, type ExistingRow, type ImportCandidate, type ImportRow } from "@/lib/importPlan";
@@ -110,10 +111,20 @@ async function runImport(
   imported += readyInserted;
   duplicates += ready.length - readyInserted;
 
+  // Progress is reported as each place is located (at most once a second), not only when a
+  // chunk of 50 is saved, so a long import visibly keeps moving
   const total = plan.withoutCoords.length;
+  const progress = createProgressReporter(total, (current) =>
+    onProgress({ type: "progress", phase: "geocoding", current, total })
+  );
+  if (total > 0) progress.start();
   for (let i = 0; i < total; i += GEOCODE_CHUNK) {
     const chunk = plan.withoutCoords.slice(i, i + GEOCODE_CHUNK);
-    const results = await mapWithConcurrency(chunk, GEOCODE_CONCURRENCY, geocode);
+    const results = await mapWithConcurrency(chunk, GEOCODE_CONCURRENCY, async (c) => {
+      const geo = await geocode(c);
+      progress.tick();
+      return geo;
+    });
 
     const rows: ImportRow[] = [];
     const refs: { place_id: string; photo_ref: string }[] = [];
@@ -139,8 +150,8 @@ async function runImport(
     await saveRefs(supabase, refs);
     imported += inserted;
     duplicates += rows.length - inserted;
-    onProgress({ type: "progress", phase: "geocoding", current: Math.min(i + GEOCODE_CHUNK, total), total });
   }
+  if (total > 0) progress.finish();
 
   onProgress({ type: "done", imported, parsed: parsed.length, geocodeFailed, duplicates });
 }
