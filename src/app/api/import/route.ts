@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServerClient } from "@/lib/supabase";
 import { getVerifiedUserId, unauthorized } from "@/lib/auth";
 import { parseTakeoutJson, parseTakeoutCsv } from "@/lib/parseTakeout";
-import { enrichPlaceByName, enrichPlaceById } from "@/lib/placesApi";
+import { enrichPlaceByName, enrichPlaceById, placeCid } from "@/lib/placesApi";
+import { locateCandidate } from "@/lib/importGeocode";
 import { mapWithConcurrency } from "@/lib/pool";
 import { createProgressReporter } from "@/lib/progress";
 import { refFromPhotoUrl } from "@/lib/photo";
@@ -18,11 +19,20 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const GEOCODE_CONCURRENCY = 10;
 // Rows are saved chunk by chunk, so a timeout keeps what was already geocoded
 const GEOCODE_CHUNK = 50;
+// Places not found are listed by name with their link, so they can be added one by one
+const NOT_FOUND_LIST_MAX = 100;
 
 type ProgressEvent =
   | { type: "progress"; phase: "geocoding"; current: number; total: number }
   | { type: "progress"; phase: "parsing" | "saving" }
-  | { type: "done"; imported: number; parsed: number; geocodeFailed: number; duplicates: number }
+  | {
+      type: "done";
+      imported: number;
+      parsed: number;
+      geocodeFailed: number;
+      duplicates: number;
+      notFound: { name: string; url: string | null }[];
+    }
   | { type: "error"; message: string };
 
 async function loadExistingKeys(supabase: SupabaseClient, userId: string) {
@@ -58,12 +68,7 @@ async function saveRows(supabase: SupabaseClient, userId: string, rows: ImportRo
   return inserted;
 }
 
-async function geocode(c: ImportCandidate) {
-  if (!c.urlPlaceId && c.name === "名称不明") return null;
-  // URL に place_id があれば Details、なければ Find Place（どちらも1回）
-  const result = c.urlPlaceId ? await enrichPlaceById(c.urlPlaceId) : await enrichPlaceByName(c.name);
-  return result?.lat != null && result?.lng != null ? result : null;
-}
+const lookups = { byId: enrichPlaceById, byName: enrichPlaceByName, cidOf: placeCid };
 
 async function runImport(
   file: File,
@@ -104,6 +109,11 @@ async function runImport(
   let duplicates = plan.duplicates;
   let imported = 0;
   let geocodeFailed = 0;
+  const notFound: { name: string; url: string | null }[] = [];
+  const markNotFound = (c: ImportCandidate) => {
+    geocodeFailed++;
+    if (notFound.length < NOT_FOUND_LIST_MAX) notFound.push({ name: c.name, url: c.sourceUrl });
+  };
 
   onProgress({ type: "progress", phase: "saving" });
   const ready = plan.withCoords.map((c) => toImportRow(c)).filter((r): r is ImportRow => !!r);
@@ -121,7 +131,7 @@ async function runImport(
   for (let i = 0; i < total; i += GEOCODE_CHUNK) {
     const chunk = plan.withoutCoords.slice(i, i + GEOCODE_CHUNK);
     const results = await mapWithConcurrency(chunk, GEOCODE_CONCURRENCY, async (c) => {
-      const geo = await geocode(c);
+      const geo = await locateCandidate(c, lookups);
       progress.tick();
       return geo;
     });
@@ -130,7 +140,7 @@ async function runImport(
     const refs: { place_id: string; photo_ref: string }[] = [];
     results.forEach((geo, k) => {
       if (!geo) {
-        geocodeFailed++;
+        markNotFound(chunk[k]);
         return;
       }
       // two different URLs in the file (or an already saved spot) can resolve to the same place
@@ -141,7 +151,7 @@ async function runImport(
       if (geo.place_id) seen.placeIds.add(geo.place_id);
       const row = toImportRow(chunk[k], geo);
       if (row) rows.push(row);
-      else geocodeFailed++;
+      else markNotFound(chunk[k]);
       const ref = refFromPhotoUrl(geo.photo_url);
       if (row && geo.place_id && ref) refs.push({ place_id: geo.place_id, photo_ref: ref });
     });
@@ -153,7 +163,7 @@ async function runImport(
   }
   if (total > 0) progress.finish();
 
-  onProgress({ type: "done", imported, parsed: parsed.length, geocodeFailed, duplicates });
+  onProgress({ type: "done", imported, parsed: parsed.length, geocodeFailed, duplicates, notFound });
 }
 
 export async function POST(req: NextRequest) {
