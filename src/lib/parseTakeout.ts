@@ -236,6 +236,12 @@ export function extractCoordsFromUrl(
     return { lat: parseFloat(d3Match[1]), lng: parseFloat(d3Match[2]) };
   }
 
+  // Pattern: /maps/search/lat,lng — a dropped pin in Takeout ("48°13'15.9"N 14°14'14.8"E")
+  const searchMatch = url.match(/\/maps\/search\/(-?\d+\.\d+),\+?(-?\d+\.\d+)/);
+  if (searchMatch) {
+    return { lat: parseFloat(searchMatch[1]), lng: parseFloat(searchMatch[2]) };
+  }
+
   // Pattern: @lat,lng
   const atMatch = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
   if (atMatch) {

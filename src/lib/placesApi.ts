@@ -125,6 +125,24 @@ export async function enrichPlaceById(
   }
 }
 
+// The place's CID (the number in its maps.google.com/?cid=… URL), to check that a search result
+// is the place a Takeout row names
+export async function placeCid(placeId: string): Promise<string | null> {
+  if (!PLACES_API_KEY) return null;
+  try {
+    const url = new URL("https://maps.googleapis.com/maps/api/place/details/json");
+    url.searchParams.set("place_id", placeId);
+    url.searchParams.set("fields", "url");
+    url.searchParams.set("key", PLACES_API_KEY);
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.result?.url as string | undefined)?.match(/[?&]cid=(\d+)/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // 名前（+ オプションで座標）で Find Place（食べログ等URLやインポートから追加する際に使用）
 export async function enrichPlaceByName(
   name: string,

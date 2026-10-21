@@ -296,7 +296,8 @@ export default function Home() {
             ))}
           </div>
 
-          <div className="flex-1 overflow-hidden">
+          {/* The list scrolls itself; the import panel (result, not-found list) scrolls here, as on mobile */}
+          <div className={`flex-1 ${activeTab === "import" ? "overflow-y-auto" : "overflow-hidden"}`}>
             {activeTab !== "import" ? (
               <PlacesList
                 places={places}
