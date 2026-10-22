@@ -24,6 +24,12 @@ describe("parseFeatureId", () => {
     expect(ishigaki!.near.lng).toBeCloseTo(124.18, 1);
   });
 
+  it("reads the ftid of an expanded share link", () => {
+    const f = parseFeatureId("https://maps.google.com/maps?q=Caf%C3%A9+Sacher+Wien&ftid=0x476d079c6e70ce23:0xdb83f04c896f79da&entry=gps");
+    expect(f?.cid).toBe("15817750527769278938");
+    expect(metres(f!.near, { lat: 48.2039, lng: 16.3697 })).toBeLessThan(100);
+  });
+
   it("ignores URLs without a feature ID, and the 0x0:0x0 placeholder", () => {
     expect(parseFeatureId("https://www.google.com/maps/search/48.2210833,14.2374444")).toBeNull();
     expect(parseFeatureId("https://www.google.com/maps/place/?q=place_id:ChIJ3S-JXmauEmsRUcIaWtf4MzE")).toBeNull();

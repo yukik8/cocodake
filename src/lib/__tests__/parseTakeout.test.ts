@@ -3,6 +3,7 @@ import {
   extractCoordsFromUrl,
   extractPlaceIdFromUrl,
   extractPlaceNameFromUrl,
+  placeNameFromQuery,
   isTabelogUrl,
   parseCsv,
   parseTabelogHtml,
@@ -147,5 +148,18 @@ describe("parseTabelogHtml", () => {
     expect(parseTabelogHtml(`<meta property="og:title" content="ラーメン &amp; 餃子 （渋谷/ラーメン）">`).name).toBe("ラーメン & 餃子");
     expect(parseTabelogHtml(`<title>カレー屋 - 食べログ</title>`).name).toBe("カレー屋");
     expect(parseTabelogHtml(`<p>nothing</p>`).name).toBeNull();
+  });
+});
+
+describe("placeNameFromQuery", () => {
+  it.each([
+    // share links: the name first
+    ["Cafe Sakura Shiba Branch, 2 Chome-5-1 Shiba, Minato City, Tokyo, 105-0014", "Cafe Sakura Shiba Branch"],
+    ["カフェさくら 芝店, 〒105-0014 東京都港区芝２丁目５−１", "カフェさくら 芝店"],
+    // the address first, the name after the street number
+    ["〒150-0002 東京都渋谷区渋谷2丁目10−2 カフェ", "カフェ"],
+    ["2 Chome-10-2 Shibuya Cafe, Shibuya City, Tokyo", "Shibuya Cafe"],
+  ])("%s", (q, expected) => {
+    expect(placeNameFromQuery(q)).toBe(expected);
   });
 });
