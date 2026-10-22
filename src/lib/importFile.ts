@@ -18,7 +18,14 @@ export function readImportFile(name: string, bytes: Uint8Array): ImportFileResul
   if (ZIP_MAGIC.every((b, i) => bytes[i] === b)) return { error: IMPORT_FILE_ERRORS.zip, status: 415 };
   if (bytes.subarray(0, 8192).includes(0)) return { error: IMPORT_FILE_ERRORS.unsupported, status: 415 };
 
-  const text = new TextDecoder("utf-8").decode(bytes);
+  // Strictly UTF-8, as Takeout writes it. A CSV saved by Excel as Shift_JIS still has a readable
+  // URL column, so it would import, but without its Japanese title and memo columns.
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return { error: IMPORT_FILE_ERRORS.notUtf8, status: 422 };
+  }
   const ext = name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
   let places: Partial<Place>[];
   if (ext === "json") {
@@ -37,10 +44,6 @@ export function readImportFile(name: string, bytes: Uint8Array): ImportFileResul
     }
   }
 
-  if (places.length === 0) {
-    // U+FFFD: bytes that aren't UTF-8, e.g. a CSV saved by Excel as Shift_JIS
-    const error = text.includes("�") ? IMPORT_FILE_ERRORS.notUtf8 : IMPORT_FILE_ERRORS.noPlaces;
-    return { error, status: 422 };
-  }
+  if (places.length === 0) return { error: IMPORT_FILE_ERRORS.noPlaces, status: 422 };
   return { places };
 }
