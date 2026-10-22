@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { useDropzone } from "react-dropzone";
+import { useDropzone, type FileRejection } from "react-dropzone";
 import type { Place } from "@/types";
 import { importResultMessage, notFoundPlaces } from "@/lib/importResult";
+import { IMPORT_FILE_ERRORS, checkImportFileName } from "@/lib/importFileCheck";
 
 interface ImportPanelProps {
   // place: the single spot added from a URL; absent after a file import (reload the list)
@@ -27,12 +28,22 @@ export default function ImportPanel({
 
   // File upload
   const onDrop = useCallback(
-    async (acceptedFiles: File[]) => {
-      if (acceptedFiles.length === 0) return;
-      const file = acceptedFiles[0];
+    async (acceptedFiles: File[], rejections: FileRejection[]) => {
+      // A file the drop zone turned away (a zip, an image…) used to do nothing at all; say why,
+      // and check the size and type before uploading
+      const file = acceptedFiles[0] ?? rejections[0]?.file;
+      if (!file) return;
+      setSuccess(null);
+      const tooMany = rejections.some((r) => r.errors.some((e) => e.code === "too-many-files"));
+      const problem = tooMany
+        ? IMPORT_FILE_ERRORS.tooMany
+        : (checkImportFileName(file.name, file.size) ?? (acceptedFiles[0] ? null : IMPORT_FILE_ERRORS.unsupported));
+      if (problem) {
+        setError(problem);
+        return;
+      }
       setLoading(true);
       setError(null);
-      setSuccess(null);
 
       try {
         const formData = new FormData();

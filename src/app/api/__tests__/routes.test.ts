@@ -386,3 +386,29 @@ describe("getSharedList (share page and GET /api/share/[id])", () => {
     expect(text).not.toContain("SECRET_KEY");
   });
 });
+
+describe("POST /api/import", () => {
+  const upload = async (name: string, content: BlobPart) => {
+    const form = new FormData();
+    form.append("file", new File([content], name));
+    const { POST } = await import("@/app/api/import/route");
+    return POST(new NextRequest("http://localhost/api/import", { method: "POST", body: form, headers: { "X-Stream": "true" } }));
+  };
+
+  it("answers a wrong file at once with a JSON error, before any streaming", async () => {
+    vi.mocked(getVerifiedUserId).mockResolvedValue(USER);
+    const res = await upload("takeout-20261020.zip", new Uint8Array([0x50, 0x4b, 0x03, 0x04]));
+    expect(res.status).toBe(415);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect((await res.json()).error).toContain("zipファイルのままです");
+    expect(createServerClient).not.toHaveBeenCalled();
+  });
+
+  it("says when a CSV has no places", async () => {
+    vi.mocked(getVerifiedUserId).mockResolvedValue(USER);
+    const res = await upload("list.csv", "name,address\nCafe,Tokyo\n");
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toContain("スポットが見つかりませんでした");
+  });
+});
+

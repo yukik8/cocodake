@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServerClient } from "@/lib/supabase";
 import { getVerifiedUserId, unauthorized } from "@/lib/auth";
-import { parseTakeoutJson, parseTakeoutCsv } from "@/lib/parseTakeout";
+import { readImportFile } from "@/lib/importFile";
+import { IMPORT_FILE_ERRORS, IMPORT_MAX_BYTES } from "@/lib/importFileCheck";
 import { enrichPlaceByName, enrichPlaceById, placeCid } from "@/lib/placesApi";
 import { locateCandidate } from "@/lib/importGeocode";
 import { mapWithConcurrency } from "@/lib/pool";
@@ -14,7 +15,6 @@ import { Place } from "@/types";
 
 export const maxDuration = 300;
 
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
 // Google calls in flight at once (was 5 per batch plus a fixed 120 ms pause between batches)
 const GEOCODE_CONCURRENCY = 10;
 // Rows are saved chunk by chunk, so a timeout keeps what was already geocoded
@@ -70,39 +70,13 @@ async function saveRows(supabase: SupabaseClient, userId: string, rows: ImportRo
 
 const lookups = { byId: enrichPlaceById, byName: enrichPlaceByName, cidOf: placeCid };
 
+// parsed: the places read from the file by readImportFile, which already rejected a file
+// with none
 async function runImport(
-  file: File,
+  parsed: Partial<Place>[],
   userId: string,
   onProgress: (event: ProgressEvent) => void
 ): Promise<void> {
-  onProgress({ type: "progress", phase: "parsing" });
-
-  const text = await file.text();
-  let parsed: Partial<Place>[] = [];
-  const fileName = file.name.toLowerCase();
-
-  if (fileName.endsWith(".json")) {
-    try {
-      parsed = parseTakeoutJson(JSON.parse(text));
-    } catch {
-      onProgress({ type: "error", message: "Invalid JSON file" });
-      return;
-    }
-  } else if (fileName.endsWith(".csv")) {
-    parsed = parseTakeoutCsv(text);
-  } else {
-    try {
-      parsed = parseTakeoutJson(JSON.parse(text));
-    } catch {
-      parsed = parseTakeoutCsv(text);
-    }
-  }
-
-  if (parsed.length === 0) {
-    onProgress({ type: "error", message: "No valid places found in file" });
-    return;
-  }
-
   const supabase = createServerClient();
   const seen = await loadExistingKeys(supabase, userId);
   const plan = planImport(parsed, seen);
@@ -178,11 +152,18 @@ export async function POST(req: NextRequest) {
     file = null;
   }
   if (!file) {
-    return NextResponse.json({ error: "file is required" }, { status: 400 });
+    return NextResponse.json({ error: IMPORT_FILE_ERRORS.missing }, { status: 400 });
   }
-  if (file.size > MAX_FILE_BYTES) {
-    return NextResponse.json({ error: "ファイルが大きすぎます（10MBまで）" }, { status: 413 });
+  if (file.size > IMPORT_MAX_BYTES) {
+    return NextResponse.json({ error: IMPORT_FILE_ERRORS.tooLarge }, { status: 413 });
   }
+  // A wrong file (a zip, an image, a CSV that isn't from Takeout) is answered here, with a plain
+  // JSON error, before any streaming starts
+  const read = readImportFile(file.name, new Uint8Array(await file.arrayBuffer()));
+  if ("error" in read) {
+    return NextResponse.json({ error: read.error }, { status: read.status });
+  }
+  const places = read.places;
 
   // X-Stream: true → SSE（新クライアント）、なし → JSON（旧map-native等）
   const useStream = req.headers.get("x-stream") === "true";
@@ -195,10 +176,10 @@ export async function POST(req: NextRequest) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
         };
         try {
-          await runImport(file, userId, send);
+          await runImport(places, userId, send);
         } catch (err) {
           console.error("Import error:", err);
-          send({ type: "error", message: "Internal server error" });
+          send({ type: "error", message: "取り込み中にエラーが発生しました。時間をおいてもう一度お試しください" });
         } finally {
           controller.close();
         }
@@ -216,7 +197,7 @@ export async function POST(req: NextRequest) {
   // JSON fallback（旧クライアント向け）
   try {
     let result: { imported?: number; error?: string } = {};
-    await runImport(file, userId, (event) => {
+    await runImport(places, userId, (event) => {
       if (event.type === "done") result = { imported: event.imported };
       if (event.type === "error") result = { error: event.message };
     });
@@ -224,6 +205,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ imported: result.imported ?? 0 });
   } catch (err) {
     console.error("Import error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: "取り込み中にエラーが発生しました。時間をおいてもう一度お試しください" }, { status: 500 });
   }
 }
