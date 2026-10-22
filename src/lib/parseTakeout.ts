@@ -368,6 +368,21 @@ export function parseTabelogHtml(html: string): TabelogInfo {
   return result;
 }
 
+// The place name in a Google Maps ?q= that holds a name and an address. Share links put the
+// name first ("Cafe Sakura Shiba Branch, 2 Chome-5-1 Shiba, Minato City, …");
+// others put it after the street number ("〒150-0002 東京都渋谷区渋谷2丁目10−2 店名").
+// Reading the first form by the second rule gave the town ("Shiba") and saved another shop.
+export function placeNameFromQuery(q: string): string | null {
+  const first = q.split(",")[0].trim();
+  if (q.includes(",") && first && !looksLikeAddress(first)) return first;
+  const m = q.match(/\d+\s*(?:Chome[-−\d]+|丁目[-\d−-]*)\s+([^,〒]+?)(?:,|$)/i);
+  return m?.[1]?.trim() || null;
+}
+
+function looksLikeAddress(s: string): boolean {
+  return /〒/.test(s) || /\d+\s*(?:Chome|丁目)/i.test(s) || /^[\d０-９]/.test(s);
+}
+
 export function extractPlaceNameFromUrl(url: string): string | null {
   try {
     const u = new URL(url);

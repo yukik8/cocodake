@@ -7,10 +7,12 @@ import {
   extractCoordsFromUrl,
   extractPlaceIdFromUrl,
   extractPlaceNameFromUrl,
+  placeNameFromQuery,
   isTabelogUrl,
   fetchTabelogInfo,
 } from "@/lib/parseTakeout";
-import { enrichPlaceByCoords, enrichPlaceById, enrichPlaceByName, geocodeAddress } from "@/lib/placesApi";
+import { enrichPlaceByCoords, enrichPlaceById, enrichPlaceByName, geocodeAddress, placeCid } from "@/lib/placesApi";
+import { parseFeatureId } from "@/lib/featureId";
 import { fetchAllowed, isGoogleMapsHost } from "@/lib/safeFetch";
 import {
   PLACE_COLUMNS,
@@ -222,6 +224,8 @@ export async function POST(req: NextRequest) {
     let resolvedUrl: string | null = null;
     let nameFromUrl: string | null = null;
     let placeId: string | null = null;
+    let placeIdFromUrl: string | null = null;
+    let queryText: string | null = null; // a ?q= holding the name and address
 
     if (rawLat != null && rawLng != null) {
       coords = { lat: rawLat, lng: rawLng };
@@ -266,6 +270,7 @@ export async function POST(req: NextRequest) {
       coords = extractCoordsFromUrl(resolvedUrl);
       nameFromUrl = extractPlaceNameFromUrl(resolvedUrl);
       placeId = extractPlaceIdFromUrl(resolvedUrl);
+      placeIdFromUrl = placeId;
       if (!coords && !placeId) {
         // /maps?q=住所+店名&ftid=... 形式（short URL展開後）
         // → 住所をジオコードして座標を取得し、座標+店名で正確に検索する
@@ -273,9 +278,10 @@ export async function POST(req: NextRequest) {
           const parsedResolved = new URL(resolvedUrl);
           const qParam = parsedResolved.searchParams.get("q");
           if (qParam && (/〒\d{3}-\d{4}/.test(qParam) || /\d+\s*(?:Chome|丁目)/i.test(qParam))) {
-            // 住所内の店名を抽出（"2 Chome−10−2 店名" → "店名"）
-            const nameMatch = qParam.match(/\d+\s*(?:Chome[-−\d]+|丁目[-\d−-]*)\s+([^,〒]+?)(?:,|$)/i);
-            if (nameMatch?.[1]) nameFromUrl = nameMatch[1].trim();
+            // 店名を取り出す（"店名, 住所" と "住所 2丁目10−2 店名" の両方）
+            queryText = qParam;
+            const qName = placeNameFromQuery(qParam);
+            if (qName) nameFromUrl = qName;
             // 住所全体をジオコードして座標を取得
             const geocoded = await geocodeAddress(qParam);
             if (geocoded) coords = geocoded;
@@ -303,9 +309,28 @@ export async function POST(req: NextRequest) {
     let rating: number | null = null;
     let photo_url: string | null = null;
 
-    const enrichResult = placeId
+    let enrichResult = placeId
       ? await enrichPlaceById(placeId)
       : await enrichPlaceByCoords(coords!.lat, coords!.lng, nameFromUrl || undefined);
+
+    // A share link's ftid names the exact place (its CID). A search result with another CID is a
+    // different place nearby, e.g. a shop named after the town in the address. Try once more
+    // with the whole name and address; failing that, keep the link's own name and position.
+    // An unreadable CID counts as a match, as in the import.
+    const feature = resolvedUrl && !placeIdFromUrl ? parseFeatureId(resolvedUrl) : null;
+    const isLinkedPlace = async (id: string) => {
+      const cid = await placeCid(id);
+      return cid == null || cid === feature?.cid;
+    };
+    let unverified = false;
+    if (feature && enrichResult?.place_id && !(await isLinkedPlace(enrichResult.place_id))) {
+      const retry = queryText && coords ? await enrichPlaceByName(queryText, coords.lat, coords.lng) : null;
+      enrichResult = retry?.place_id && (await isLinkedPlace(retry.place_id)) ? retry : null;
+      if (!enrichResult) {
+        placeId = null; // the name-only fallback's place ID was the other place too
+        unverified = true;
+      }
+    }
 
     if (enrichResult?.name) {
       name = enrichResult.name;
@@ -318,6 +343,9 @@ export async function POST(req: NextRequest) {
       if (!coords && enrichResult.lat != null && enrichResult.lng != null) {
         coords = { lat: enrichResult.lat, lng: enrichResult.lng };
       }
+    } else if (unverified) {
+      // saved as the link names it; marked enriched so /api/enrich doesn't search by name again
+      enriched = true;
     } else if (coords && !nameFromUrl) {
       // Places APIがない or 失敗 → Nominatimフォールバック
       const nominatim = await reverseGeocodeNominatim(coords.lat, coords.lng);

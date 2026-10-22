@@ -1,5 +1,6 @@
 // Takeout URLs name a place by its feature ID, e.g.
 // https://www.google.com/maps/place/Munich/data=!4m2!3m1!1s0x479e7600b4a01453:0x316a8592ea327bab
+// and so do expanded share links (…&ftid=0x…:0x…).
 // - The second half is the place's CID, the number in maps.google.com/?cid=…, so a search result
 //   can be checked against it.
 // - The first half is an S2 cell ID, a position on the globe. It is usually within a few hundred
@@ -13,7 +14,7 @@ export interface FeatureId {
 }
 
 export function parseFeatureId(url: string): FeatureId | null {
-  const m = url.match(/!1s(0x[0-9a-f]{1,16}):(0x[0-9a-f]{1,16})/i);
+  const m = url.match(/(?:!1s|[?&]ftid=)(0x[0-9a-f]{1,16}):(0x[0-9a-f]{1,16})/i);
   if (!m) return null;
   const cell = BigInt(m[1]);
   const cid = BigInt(m[2]);
