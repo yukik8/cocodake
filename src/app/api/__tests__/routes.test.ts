@@ -404,6 +404,13 @@ describe("POST /api/import", () => {
     expect(createServerClient).not.toHaveBeenCalled();
   });
 
+  it("turns a file over 4MB away with its own 413, under Vercel's 4.5MB request limit", async () => {
+    vi.mocked(getVerifiedUserId).mockResolvedValue(USER);
+    const res = await upload("big.csv", new Uint8Array(4 * 1024 * 1024 + 1));
+    expect(res.status).toBe(413);
+    expect((await res.json()).error).toBe("ファイルが大きすぎます（4MBまで）");
+  });
+
   it("says when a CSV has no places", async () => {
     vi.mocked(getVerifiedUserId).mockResolvedValue(USER);
     const res = await upload("list.csv", "name,address\nCafe,Tokyo\n");

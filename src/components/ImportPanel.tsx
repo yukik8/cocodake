@@ -57,7 +57,8 @@ export default function ImportPanel({
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          setError(data.error || "インポートに失敗しました");
+          // a 413 from Vercel itself (over 4.5 MB) has no JSON body
+          setError(data.error || (res.status === 413 ? IMPORT_FILE_ERRORS.tooLarge : "インポートに失敗しました"));
           return;
         }
         if (!res.body) throw new Error("no response body");
