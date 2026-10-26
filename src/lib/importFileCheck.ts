@@ -2,12 +2,14 @@
 // web client (the app keeps a copy in src/lib/importFileCheck.ts). No dependencies, so the
 // client can check a file before uploading it.
 
-export const IMPORT_MAX_BYTES = 10 * 1024 * 1024;
+// Vercel turns away a request body over 4.5 MB before the route runs, with a 413 that isn't our
+// JSON, so the limit stays under it (with room for the multipart wrapping)
+export const IMPORT_MAX_BYTES = 4 * 1024 * 1024;
 
 export const IMPORT_FILE_ERRORS = {
   missing: "ファイルを選んでください",
   tooMany: "ファイルは1つずつ選んでください",
-  tooLarge: "ファイルが大きすぎます（10MBまで）",
+  tooLarge: "ファイルが大きすぎます（4MBまで）",
   zip: "zipファイルのままです。解凍して、中のCSV（例:「行ってみたい.csv」）かJSONを選んでください",
   unsupported: "対応していないファイル形式です。Google TakeoutのCSVかJSONを選んでください",
   invalidJson: "JSONとして読み込めませんでした。Google TakeoutのCSVかJSONを選んでください",
